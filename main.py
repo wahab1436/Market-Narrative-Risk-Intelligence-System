@@ -1,28 +1,21 @@
 """
-Main pipeline orchestrator for Market Narrative Risk Intelligence System.
-Full integration with configuration management and structured logging.
+Main pipeline orchestrator - Updated to initialize config before imports.
 """
 import sys
-import argparse
-import subprocess
 from pathlib import Path
 from datetime import datetime
-import pandas as pd
-import numpy as np
 
-# Add src to path for module imports
+# Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Import configuration and logging utilities
-from src.utils.config_loader import config_loader, get_value
-from src.utils.logger import loggers, get_pipeline_logger, LoggingContext
+# IMPORTANT: Initialize config_loader FIRST before any other imports
+from src.utils.config_loader import config_loader
 
-# Import pipeline components
-from src.scraper.investing_scraper import InvestingScraper, scrape_and_save
-from src.preprocessing.clean_data import DataCleaner, clean_and_save
-from src.preprocessing.feature_engineering import FeatureEngineer, engineer_and_save
-
-# Import all models
+# Now import everything else
+from src.utils.logger import get_pipeline_logger, setup_pipeline_logging
+from src.scraper.investing_scraper import scrape_and_save
+from src.preprocessing.clean_data import clean_and_save
+from src.preprocessing.feature_engineering import engineer_and_save
 from src.models.regression.linear_regression import LinearRegressionModel
 from src.models.regression.ridge_regression import RidgeRegressionModel
 from src.models.regression.lasso_regression import LassoRegressionModel
@@ -32,15 +25,12 @@ from src.models.neural_network import NeuralNetworkModel
 from src.models.xgboost_model import XGBoostModel
 from src.models.knn_model import KNNModel
 from src.models.isolation_forest import IsolationForestModel
-
-# Import explainability and EDA
 from src.explainability.shap_analysis import SHAPAnalyzer
-from src.eda.visualization import EDAVisualizer
 
 
 class PipelineOrchestrator:
     """
-    Orchestrates the complete data pipeline with integrated logging and configuration.
+    Orchestrates the complete data pipeline.
     """
     
     def __init__(self, run_all: bool = True):
@@ -48,29 +38,30 @@ class PipelineOrchestrator:
         Initialize pipeline orchestrator.
         
         Args:
-            run_all: Whether to run all pipeline steps by default
+            run_all: Whether to run all pipeline steps
         """
+        # Get config
         self.config = config_loader.get_config("config")
+        
+        # Setup logging based on config
+        log_level = self.config.get('logging', {}).get('level', 'INFO')
+        setup_pipeline_logging(level=log_level)
+        
+        self.logger = get_pipeline_logger()
         self.run_all = run_all
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Initialize logger
-        self.logger = get_pipeline_logger()
-        
-        # File paths for data persistence
+        # File paths
         self.bronze_path = None
         self.silver_path = None
         self.gold_path = None
         
-        # Performance metrics
-        self.execution_metrics = {}
-        
-        # Create necessary directories
-        self._setup_directories()
-        
         print("=" * 80)
         print("MARKET NARRATIVE RISK INTELLIGENCE SYSTEM")
         print("=" * 80)
+        self.logger.info("PipelineOrchestrator initialized")
+    
+    # ... rest of the class remains the same ...
     
     def _setup_directories(self):
         """Create necessary directories for the pipeline."""
