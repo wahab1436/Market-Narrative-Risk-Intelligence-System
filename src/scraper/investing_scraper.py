@@ -1,172 +1,155 @@
 """
-Investing.com news scraper with improved anti-blocking measures.
+RSS Feed scraper for financial news - works reliably without blocking.
+Supports multiple news sources: Reuters, MarketWatch, CNBC, Bloomberg, etc.
 """
 import time
-import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
+from bs4 import BeautifulSoup
 
 from src.utils.logger import scraper_logger
 from src.utils.config_loader import config_loader
 
 
-class InvestingScraper:
+class RSSNewsScraper:
     """
-    Scraper for Investing.com financial news with improved anti-blocking.
+    RSS feed scraper for financial news from multiple sources.
     """
     
-    def __init__(self, use_selenium: bool = False):
-        """
-        Initialize scraper.
-        
-        Args:
-            use_selenium: Whether to use Selenium for JavaScript content
-        """
+    def __init__(self):
+        """Initialize RSS scraper with multiple news sources."""
         self.config = config_loader.get_config("config")
         self.scraping_config = self.config.get("scraping", {})
-        self.use_selenium = use_selenium
-        self.session = requests.Session()
         
-    def _get_realistic_headers(self) -> dict:
-        """
-        Get realistic browser headers to avoid blocking.
-        
-        Returns:
-            Dictionary of HTTP headers
-        """
-        return {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"'
+        # RSS feed URLs - these are public and won't block
+        self.rss_feeds = {
+            'reuters_business': 'https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&ceid=US:en&hl=en-US&gl=US',
+            'marketwatch': 'https://feeds.marketwatch.com/marketwatch/topstories/',
+            'cnbc': 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147',
+            'bloomberg': 'https://news.google.com/rss/search?q=when:24h+allinurl:bloomberg.com&ceid=US:en&hl=en-US&gl=US',
+            'wsj': 'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',
+            'financial_times': 'https://news.google.com/rss/search?q=when:24h+allinurl:ft.com&ceid=US:en&hl=en-US&gl=US',
+            'forbes': 'https://news.google.com/rss/search?q=when:24h+allinurl:forbes.com+finance&ceid=US:en&hl=en-US&gl=US',
+            'seeking_alpha': 'https://news.google.com/rss/search?q=when:24h+allinurl:seekingalpha.com&ceid=US:en&hl=en-US&gl=US'
         }
     
-    def _make_request(self, url: str, retry_count: int = 0) -> Optional[requests.Response]:
+    def _fetch_rss_feed(self, url: str, source: str) -> List[Dict]:
         """
-        Make HTTP request with retry logic and better headers.
+        Fetch and parse RSS feed.
         
         Args:
-            url: URL to request
-            retry_count: Current retry attempt
-        
+            url: RSS feed URL
+            source: Source name
+            
         Returns:
-            Response object or None
+            List of article dictionaries
         """
-        headers = self._get_realistic_headers()
+        articles = []
         
         try:
-            # Add random delay to appear more human-like
-            time.sleep(random.uniform(1, 3))
+            scraper_logger.info(f"Fetching RSS feed from {source}")
             
-            response = self.session.get(
-                url,
-                headers=headers,
-                timeout=self.scraping_config.get('timeout', 30),
-                allow_redirects=True
-            )
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
             
-            scraper_logger.info(f"Response status: {response.status_code}")
-            
-            # Check if we got blocked
-            if response.status_code == 403:
-                scraper_logger.warning("Received 403 - website blocking scraper")
-                
-                # Try with different approach
-                if retry_count < self.scraping_config.get('max_retries', 3):
-                    delay = self.scraping_config.get('retry_delay', 5) * (2 ** retry_count)
-                    scraper_logger.info(f"Retrying with delay: {delay}s")
-                    time.sleep(delay)
-                    
-                    # Try to get cookies first
-                    self._get_cookies(url)
-                    return self._make_request(url, retry_count + 1)
-                else:
-                    scraper_logger.error("Max retries exceeded - website blocking access")
-                    return None
-            
+            response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
-            return response
             
-        except requests.exceptions.RequestException as e:
-            if retry_count < self.scraping_config.get('max_retries', 3):
-                delay = self.scraping_config.get('retry_delay', 5) * (2 ** retry_count)
-                scraper_logger.warning(f"Request failed, retrying in {delay}s: {e}")
-                time.sleep(delay)
-                return self._make_request(url, retry_count + 1)
-            else:
-                scraper_logger.error(f"Max retries exceeded for URL: {url}")
-                return None
-    
-    def _get_cookies(self, url: str):
-        """
-        Get cookies from the main page first.
-        
-        Args:
-            url: URL to get cookies from
-        """
-        try:
-            base_url = "/".join(url.split("/")[:3])
-            response = self.session.get(
-                base_url,
-                headers=self._get_realistic_headers(),
-                timeout=10
-            )
-            scraper_logger.info(f"Got cookies from {base_url}")
+            # Parse XML
+            root = ET.fromstring(response.content)
+            
+            # Handle different RSS formats
+            items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
+            
+            scraper_logger.info(f"Found {len(items)} items in {source}")
+            
+            for item in items:
+                try:
+                    article = self._parse_rss_item(item, source)
+                    if article:
+                        articles.append(article)
+                except Exception as e:
+                    scraper_logger.debug(f"Error parsing item: {e}")
+                    continue
+            
+            scraper_logger.info(f"Successfully parsed {len(articles)} articles from {source}")
+            
         except Exception as e:
-            scraper_logger.warning(f"Failed to get cookies: {e}")
+            scraper_logger.error(f"Error fetching RSS feed from {source}: {e}")
+        
+        return articles
     
-    def _parse_article(self, article_soup) -> Optional[Dict]:
+    def _parse_rss_item(self, item, source: str) -> Optional[Dict]:
         """
-        Parse individual article from HTML.
+        Parse individual RSS item.
         
         Args:
-            article_soup: BeautifulSoup object of article
-        
+            item: XML item element
+            source: Source name
+            
         Returns:
             Dictionary with article data or None
         """
         try:
-            # Extract headline
-            title_elem = article_soup.find('a', class_='title')
-            headline = title_elem.get_text(strip=True) if title_elem else None
+            # Extract title (headline)
+            title_elem = item.find('title')
+            if title_elem is None:
+                title_elem = item.find('{http://www.w3.org/2005/Atom}title')
+            headline = title_elem.text if title_elem is not None else None
             
-            # Extract snippet
-            snippet_elem = article_soup.find('p', class_='summary')
-            snippet = snippet_elem.get_text(strip=True) if snippet_elem else None
+            # Extract description (snippet)
+            desc_elem = item.find('description') or item.find('{http://www.w3.org/2005/Atom}summary')
+            snippet = None
+            if desc_elem is not None and desc_elem.text:
+                # Clean HTML tags from description
+                soup = BeautifulSoup(desc_elem.text, 'html.parser')
+                snippet = soup.get_text(strip=True)[:500]  # Limit length
+            
+            # Extract URL
+            link_elem = item.find('link')
+            if link_elem is None:
+                link_elem = item.find('{http://www.w3.org/2005/Atom}link')
+                article_url = link_elem.get('href') if link_elem is not None else None
+            else:
+                article_url = link_elem.text if link_elem.text else link_elem.get('href')
             
             # Extract timestamp
-            time_elem = article_soup.find('time')
-            timestamp = time_elem.get('datetime') if time_elem else None
+            pub_date_elem = (
+                item.find('pubDate') or 
+                item.find('{http://www.w3.org/2005/Atom}published') or
+                item.find('{http://www.w3.org/2005/Atom}updated')
+            )
             
-            # Extract asset tags
+            timestamp = None
+            if pub_date_elem is not None and pub_date_elem.text:
+                try:
+                    # Try parsing different date formats
+                    timestamp = pub_date_elem.text
+                except Exception:
+                    timestamp = datetime.now().isoformat()
+            else:
+                timestamp = datetime.now().isoformat()
+            
+            # Extract categories/tags
             tags = []
-            tag_elems = article_soup.find_all('a', class_='relatedInstrument')
-            for tag in tag_elems:
-                tags.append(tag.get_text(strip=True))
+            category_elems = item.findall('category') or item.findall('{http://www.w3.org/2005/Atom}category')
+            for cat in category_elems:
+                tag_text = cat.text if cat.text else cat.get('term')
+                if tag_text:
+                    tags.append(tag_text)
             
-            # Extract article URL
-            article_url = None
-            if title_elem and title_elem.get('href'):
-                article_url = self.scraping_config['base_url'] + title_elem.get('href')
-            
-            if not all([headline, snippet, timestamp]):
+            if not headline:
                 return None
+            
+            # If no snippet, use headline as snippet
+            if not snippet:
+                snippet = headline
             
             return {
                 'headline': headline,
@@ -174,56 +157,45 @@ class InvestingScraper:
                 'timestamp': timestamp,
                 'asset_tags': tags,
                 'url': article_url,
+                'source': source,
                 'scraped_at': datetime.now().isoformat()
             }
             
         except Exception as e:
-            scraper_logger.error(f"Error parsing article: {e}")
+            scraper_logger.debug(f"Error parsing RSS item: {e}")
             return None
     
-    def scrape_latest_news(self) -> List[Dict]:
+    def scrape_all_sources(self, max_articles_per_source: int = 50) -> List[Dict]:
         """
-        Scrape latest news from Investing.com.
+        Scrape news from all RSS sources.
         
+        Args:
+            max_articles_per_source: Maximum articles per source
+            
         Returns:
-            List of article dictionaries
+            List of all articles from all sources
         """
-        scraper_logger.info("Starting news scraping")
+        all_articles = []
         
-        url = self.scraping_config.get('news_url')
+        scraper_logger.info(f"Starting RSS scraping from {len(self.rss_feeds)} sources")
         
-        # First, get cookies
-        self._get_cookies(url)
+        for source_name, feed_url in self.rss_feeds.items():
+            try:
+                articles = self._fetch_rss_feed(feed_url, source_name)
+                
+                # Limit articles per source
+                articles = articles[:max_articles_per_source]
+                all_articles.extend(articles)
+                
+                # Be polite - small delay between sources
+                time.sleep(1)
+                
+            except Exception as e:
+                scraper_logger.error(f"Error scraping {source_name}: {e}")
+                continue
         
-        # Now try to scrape
-        response = self._make_request(url)
-        
-        if not response:
-            scraper_logger.error("Failed to fetch news page")
-            return []
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Try different selectors as Investing.com structure may vary
-        article_elements = (
-            soup.find_all('article', class_='js-article-item') or
-            soup.find_all('article') or
-            soup.find_all('div', class_='largeTitle') or
-            soup.find_all('div', class_='article')
-        )
-        
-        scraper_logger.info(f"Found {len(article_elements)} article elements")
-        
-        articles = []
-        max_articles = self.scraping_config.get('max_articles', 100)
-        
-        for article_elem in article_elements[:max_articles]:
-            article_data = self._parse_article(article_elem)
-            if article_data:
-                articles.append(article_data)
-        
-        scraper_logger.info(f"Successfully scraped {len(articles)} articles")
-        return articles
+        scraper_logger.info(f"Total articles scraped: {len(all_articles)}")
+        return all_articles
     
     def save_to_bronze(self, articles: List[Dict]):
         """
@@ -240,7 +212,7 @@ class InvestingScraper:
         
         # Create timestamp-based filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"investing_news_{timestamp}.parquet"
+        filename = f"rss_news_{timestamp}.parquet"
         filepath = Path("data/bronze") / filename
         
         # Ensure directory exists
@@ -249,36 +221,48 @@ class InvestingScraper:
         # Save as Parquet
         df.to_parquet(filepath, index=False)
         scraper_logger.info(f"Saved {len(df)} articles to {filepath}")
-    
-    def close(self):
-        """Clean up resources."""
-        if self.session:
-            self.session.close()
+        
+        return filepath
 
 
 def scrape_and_save():
     """
-    Main scraping function to be called from pipeline.
+    Main scraping function using RSS feeds.
     
     Returns:
         Path to saved bronze file
     """
-    scraper = InvestingScraper(use_selenium=False)
+    scraper = RSSNewsScraper()
     
     try:
-        articles = scraper.scrape_latest_news()
+        scraper_logger.info("Starting RSS news scraping")
+        
+        # Scrape from all sources
+        articles = scraper.scrape_all_sources(max_articles_per_source=20)
+        
         if articles:
-            scraper.save_to_bronze(articles)
-            
-            # Return path to latest file
-            bronze_dir = Path("data/bronze")
-            files = list(bronze_dir.glob("*.parquet"))
-            if files:
-                return max(files, key=lambda x: x.stat().st_mtime)
-        return None
+            filepath = scraper.save_to_bronze(articles)
+            scraper_logger.info(f"RSS scraping completed successfully: {filepath}")
+            return filepath
+        else:
+            scraper_logger.warning("No articles scraped from any source")
+            return None
         
     except Exception as e:
-        scraper_logger.error(f"Scraping failed: {e}")
+        scraper_logger.error(f"RSS scraping failed: {e}", exc_info=True)
         return None
-    finally:
-        scraper.close()
+
+
+if __name__ == "__main__":
+    # Test the scraper
+    result = scrape_and_save()
+    if result:
+        print(f"Successfully scraped news to: {result}")
+        df = pd.read_parquet(result)
+        print(f"\nScraped {len(df)} articles")
+        print(f"\nSources: {df['source'].value_counts()}")
+        print(f"\nSample headlines:")
+        for headline in df['headline'].head(5):
+            print(f"  - {headline}")
+    else:
+        print("Scraping failed")
