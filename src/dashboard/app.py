@@ -12,28 +12,61 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import sys
+import traceback
 from typing import List, Dict, Optional, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Import project modules
+# Import project modules with proper error handling
 try:
-    from src.utils.logger import loggers, get_dashboard_logger, LoggingContext
-    from src.utils.config_loader import config_loader, get_value
+    # Import configuration and logging first
+    from src.utils.config_loader import config_loader
+    print("✓ Config loader imported successfully")
+except ImportError as e:
+    st.error(f"Failed to import config_loader: {e}")
+    traceback.print_exc()
+    raise
+
+try:
+    # Import logger with simplified approach
+    import logging
+    from src.utils.logger import (
+        PipelineLogger,
+        LoggingContext,
+        loggers  # This is the GlobalLoggers instance
+    )
+    
+    # Create a simple logger for dashboard initialization
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
+    print("✓ Logger imported successfully")
+except ImportError as e:
+    st.error(f"Failed to import logger: {e}")
+    traceback.print_exc()
+    # Create a minimal logger as fallback
+    import logging
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
+    loggers = None
+
+try:
+    # Try to import EDA visualizer
     from src.eda.visualization import EDAVisualizer
+    print("✓ EDAVisualizer imported successfully")
+except ImportError as e:
+    logger.warning(f"EDAVisualizer not available: {e}")
+    EDAVisualizer = None
+
+try:
+    # Try to import models (optional for dashboard)
     from src.models.regression.linear_regression import LinearRegressionModel
     from src.models.regression.ridge_regression import RidgeRegressionModel
     from src.models.regression.lasso_regression import LassoRegressionModel
-    from src.models.regression.polynomial_regression import PolynomialRegressionModel
-    from src.models.regression.time_lagged_regression import TimeLaggedRegressionModel
-    from src.models.xgboost_model import XGBoostModel
-    from src.models.knn_model import KNNModel
-    from src.models.isolation_forest import IsolationForestModel
-    from src.models.neural_network import NeuralNetworkModel
+    print("✓ Model imports successful")
 except ImportError as e:
-    st.error(f"Import error: {e}. Please ensure all dependencies are installed.")
-    raise
+    logger.info(f"Model imports optional, continuing without: {e}")
+    LinearRegressionModel = RidgeRegressionModel = LassoRegressionModel = None
 
 
 class MarketRiskDashboard:
@@ -56,14 +89,26 @@ class MarketRiskDashboard:
         )
         
         # Initialize logger
-        self.logger = get_dashboard_logger()
+        if loggers:
+            self.logger = loggers.dashboard()
+        else:
+            self.logger = PipelineLogger("dashboard.dashboard", "dashboard")
         
         # Initialize configuration
-        self.config = config_loader.get_dashboard_config()
-        self.colors = self.config.get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+        try:
+            self.config = config_loader.get_dashboard_config()
+            self.colors = self.config.get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+            print("✓ Configuration loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to load dashboard config: {e}")
+            self.config = {}
+            self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
         
-        # Initialize EDA visualizer
-        self.eda_visualizer = EDAVisualizer(theme="plotly_white")
+        # Initialize EDA visualizer if available
+        if EDAVisualizer:
+            self.eda_visualizer = EDAVisualizer(theme="plotly_white")
+        else:
+            self.eda_visualizer = None
         
         # Initialize session state
         self._init_session_state()
@@ -71,8 +116,8 @@ class MarketRiskDashboard:
         # Load data
         self.load_data()
         
-        with LoggingContext(self.logger, "dashboard_initialization"):
-            self.logger.info("MarketRiskDashboard initialized")
+        # Log initialization
+        self.logger.info("MarketRiskDashboard initialized successfully")
     
     def _init_session_state(self):
         """Initialize session state variables."""
@@ -91,7 +136,7 @@ class MarketRiskDashboard:
             gold_dir = Path("data/gold")
             
             # Look for prediction files
-            prediction_files = list(gold_dir.glob("*_predictions.parquet"))
+            prediction_files = list(gold_dir.glob("*predictions*.parquet"))
             
             if prediction_files:
                 # Load the most recent predictions
@@ -1628,41 +1673,40 @@ class MarketRiskDashboard:
     
     def run(self):
         """Run the dashboard application."""
-        with LoggingContext(self.logger, "dashboard_execution"):
-            try:
-                # Render header
-                self.render_header()
-                
-                # Render sidebar (navigation and filters)
-                self.render_sidebar()
-                
-                # Render main content based on selected view
-                view_handlers = {
-                    'overview': self.render_overview,
-                    'stress_analysis': self.render_stress_analysis,
-                    'risk_regimes': self.render_risk_regimes,
-                    'anomaly_detection': self.render_anomaly_detection,
-                    'historical_similarity': self.render_historical_similarity,
-                    'model_performance': self.render_model_performance,
-                    'feature_analysis': self.render_feature_analysis,
-                    'data_export': self.render_data_export
-                }
-                
-                current_view = st.session_state.get('current_view', 'overview')
-                handler = view_handlers.get(current_view, self.render_overview)
-                
-                # Execute the view handler
-                handler()
-                
-                # Render footer
-                self.render_footer()
-                
-                self.logger.info(f"Dashboard view '{current_view}' rendered successfully")
-                
-            except Exception as e:
-                self.logger.error(f"Dashboard error: {e}", exc_info=True)
-                st.error(f"An error occurred: {str(e)}")
-                st.info("Please check the logs for more details.")
+        try:
+            # Render header
+            self.render_header()
+            
+            # Render sidebar (navigation and filters)
+            self.render_sidebar()
+            
+            # Render main content based on selected view
+            view_handlers = {
+                'overview': self.render_overview,
+                'stress_analysis': self.render_stress_analysis,
+                'risk_regimes': self.render_risk_regimes,
+                'anomaly_detection': self.render_anomaly_detection,
+                'historical_similarity': self.render_historical_similarity,
+                'model_performance': self.render_model_performance,
+                'feature_analysis': self.render_feature_analysis,
+                'data_export': self.render_data_export
+            }
+            
+            current_view = st.session_state.get('current_view', 'overview')
+            handler = view_handlers.get(current_view, self.render_overview)
+            
+            # Execute the view handler
+            handler()
+            
+            # Render footer
+            self.render_footer()
+            
+            self.logger.info(f"Dashboard view '{current_view}' rendered successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Dashboard error: {e}", exc_info=True)
+            st.error(f"An error occurred: {str(e)}")
+            st.info("Please check the logs for more details.")
 
 
 def main():
@@ -1672,6 +1716,8 @@ def main():
         dashboard.run()
     except Exception as e:
         st.error(f"Failed to initialize dashboard: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         st.stop()
 
 
