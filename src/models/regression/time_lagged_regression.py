@@ -3,12 +3,12 @@ Time-lagged regression model for stress score prediction.
 """
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
 from sklearn.model_selection import train_test_split, TimeSeriesSplit
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 import joblib
 from pathlib import Path
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 from datetime import datetime, timedelta
 
 from src.utils.logger import model_logger
@@ -25,10 +25,11 @@ class TimeLaggedRegressionModel:
         self.config = config_loader.get_config("config")
         self.model_config = self.config.get("models", {}).get("regression", {}).get("time_lagged", {})
         self.lag_window = self.model_config.get('lag_window', 7)
-        self.model = LinearRegression()
+        self.model = Ridge(alpha=1.0)  # Use Ridge for stability with correlated lags
         self.feature_columns = None
         self.target_column = 'weighted_stress_score'
-        model_logger.info("TimeLaggedRegressionModel initialized")
+        self.scaler = None
+        model_logger.info(f"TimeLaggedRegressionModel initialized (lag_window={self.lag_window})")
     
     def create_lagged_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -43,29 +44,66 @@ class TimeLaggedRegressionModel:
         if 'timestamp' not in df.columns:
             raise ValueError("DataFrame must have 'timestamp' column for time-lagged features")
         
-        # Ensure sorted by timestamp
-        df = df.sort_values('timestamp').reset_index(drop=True)
+        # Ensure sorted by timestamp and set as index
+        df_sorted = df.sort_values('timestamp').copy()
+        df_sorted.set_index('timestamp', inplace=True)
         
-        # Create lagged features for key columns
-        lag_columns = ['weighted_stress_score', 'keyword_stress_score', 'sentiment_polarity']
-        available_columns = [col for col in lag_columns if col in df.columns]
+        # Resample to daily frequency if needed
+        if len(df_sorted) > 100:  # If we have enough data
+            df_resampled = df_sorted.resample('D').mean()
+        else:
+            df_resampled = df_sorted
         
-        lagged_df = df.copy()
+        # Select key features for lagging
+        lag_candidates = [
+            'weighted_stress_score',
+            'keyword_stress_score', 
+            'sentiment_polarity',
+            'daily_article_count',
+            'rolling_7d_mean'
+        ]
         
-        for col in available_columns:
+        available_features = [f for f in lag_candidates if f in df_resampled.columns]
+        
+        if not available_features:
+            # Fallback to numeric columns
+            numeric_cols = df_resampled.select_dtypes(include=[np.number]).columns.tolist()
+            available_features = numeric_cols[:3]  # Use first 3 numeric columns
+        
+        # Create lagged features
+        lagged_data = {}
+        
+        for feature in available_features:
+            # Create lags
             for lag in range(1, self.lag_window + 1):
-                lagged_df[f'{col}_lag_{lag}'] = lagged_df[col].shift(lag)
+                lagged_data[f'{feature}_lag_{lag}'] = df_resampled[feature].shift(lag)
+            
+            # Create moving averages
+            lagged_data[f'{feature}_ma_3'] = df_resampled[feature].rolling(window=3, min_periods=1).mean()
+            lagged_data[f'{feature}_ma_7'] = df_resampled[feature].rolling(window=7, min_periods=1).mean()
         
-        # Add moving averages
-        for col in available_columns:
-            lagged_df[f'{col}_ma_3'] = lagged_df[col].rolling(3).mean()
-            lagged_df[f'{col}_ma_7'] = lagged_df[col].rolling(7).mean()
+        # Combine all features
+        lagged_df = pd.DataFrame(lagged_data)
         
-        # Add day of week and month features
-        lagged_df['day_of_week'] = lagged_df['timestamp'].dt.dayofweek
-        lagged_df['month'] = lagged_df['timestamp'].dt.month
+        # Add time-based features
+        lagged_df['day_of_week'] = lagged_df.index.dayofweek
+        lagged_df['day_of_month'] = lagged_df.index.day
+        lagged_df['month'] = lagged_df.index.month
+        lagged_df['quarter'] = lagged_df.index.quarter
         
-        return lagged_df.dropna()
+        # Add cyclical encoding for day of week
+        lagged_df['day_of_week_sin'] = np.sin(2 * np.pi * lagged_df['day_of_week'] / 7)
+        lagged_df['day_of_week_cos'] = np.cos(2 * np.pi * lagged_df['day_of_week'] / 7)
+        
+        # Add target variable (shifted for prediction)
+        if 'weighted_stress_score' in df_resampled.columns:
+            # Predict next day's stress score
+            lagged_df['target'] = df_resampled['weighted_stress_score'].shift(-1)
+        
+        # Drop rows with NaN (from lagging)
+        lagged_df = lagged_df.dropna()
+        
+        return lagged_df.reset_index()
     
     def prepare_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         """
@@ -80,15 +118,15 @@ class TimeLaggedRegressionModel:
         # Create lagged features
         lagged_df = self.create_lagged_features(df)
         
-        # Select lagged feature columns
-        lagged_cols = [col for col in lagged_df.columns if '_lag_' in col or '_ma_' in col]
-        time_cols = ['day_of_week', 'month']
+        if 'target' not in lagged_df.columns:
+            raise ValueError("Could not create target variable. Ensure 'weighted_stress_score' exists in data.")
         
-        feature_cols = lagged_cols + time_cols
+        # Separate features and target
+        feature_cols = [col for col in lagged_df.columns if col not in ['timestamp', 'target']]
         self.feature_columns = feature_cols
         
         X = lagged_df[feature_cols].fillna(0)
-        y = lagged_df[self.target_column]
+        y = lagged_df['target']
         
         return X, y
     
@@ -107,12 +145,26 @@ class TimeLaggedRegressionModel:
         # Prepare data
         X, y = self.prepare_data(df)
         
+        if len(X) < 20:
+            model_logger.warning(f"Insufficient data for time-lagged model: {len(X)} samples")
+            return {
+                'error': 'Insufficient data',
+                'n_samples': len(X)
+            }
+        
         # Use time series cross-validation
-        tscv = TimeSeriesSplit(n_splits=5)
+        tscv = TimeSeriesSplit(n_splits=min(5, len(X) // 4))
         
-        cv_scores = {'mse': [], 'r2': []}
+        cv_scores = {
+            'mse': [],
+            'rmse': [],
+            'mae': [],
+            'r2': []
+        }
         
-        for train_idx, test_idx in tscv.split(X):
+        feature_importances = []
+        
+        for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
             
@@ -121,31 +173,51 @@ class TimeLaggedRegressionModel:
             
             # Evaluate
             y_pred = self.model.predict(X_test)
+            
             cv_scores['mse'].append(mean_squared_error(y_test, y_pred))
+            cv_scores['rmse'].append(np.sqrt(mean_squared_error(y_test, y_pred)))
+            cv_scores['mae'].append(mean_absolute_error(y_test, y_pred))
             cv_scores['r2'].append(r2_score(y_test, y_pred))
+            
+            # Collect feature importances
+            feature_importances.append(np.abs(self.model.coef_))
         
         # Final training on all data
         self.model.fit(X, y)
         
-        # Cross-validation results
-        avg_mse = np.mean(cv_scores['mse'])
-        avg_r2 = np.mean(cv_scores['r2'])
+        # Calculate average metrics
+        avg_metrics = {k: np.mean(v) for k, v in cv_scores.items()}
         
-        # Feature importance (coefficients)
-        feature_importance = pd.DataFrame({
+        # Calculate feature importance
+        avg_feature_importance = np.mean(feature_importances, axis=0)
+        
+        feature_importance_df = pd.DataFrame({
             'feature': self.feature_columns,
+            'importance': avg_feature_importance,
             'coefficient': self.model.coef_
-        }).sort_values('coefficient', key=abs, ascending=False)
+        }).sort_values('importance', ascending=False)
+        
+        # Identify most important lags
+        lag_features = feature_importance_df[feature_importance_df['feature'].str.contains('_lag_')]
+        ma_features = feature_importance_df[feature_importance_df['feature'].str.contains('_ma_')]
         
         results = {
             'lag_window': self.lag_window,
-            'cv_mse': avg_mse,
-            'cv_r2': avg_r2,
-            'feature_importance': feature_importance,
-            'cv_scores': cv_scores
+            'n_samples': len(X),
+            'cv_metrics': avg_metrics,
+            'cv_details': cv_scores,
+            'feature_importance': feature_importance_df,
+            'top_lag_features': lag_features.head(5).to_dict('records'),
+            'top_ma_features': ma_features.head(5).to_dict('records'),
+            'model_params': self.model.get_params()
         }
         
-        model_logger.info(f"Time-lagged regression (window={self.lag_window}) trained: CV MSE={avg_mse:.4f}, CV R2={avg_r2:.4f}")
+        model_logger.info(
+            f"Time-lagged regression trained: "
+            f"RMSE={avg_metrics['rmse']:.4f}, R2={avg_metrics['r2']:.4f}, "
+            f"Samples={len(X)}"
+        )
+        
         return results
     
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -164,6 +236,10 @@ class TimeLaggedRegressionModel:
         # Create lagged features
         lagged_df = self.create_lagged_features(df)
         
+        if lagged_df.empty:
+            model_logger.warning("No data for prediction after lagging")
+            return df.copy()
+        
         # Prepare features
         X = lagged_df[self.feature_columns].fillna(0)
         
@@ -173,20 +249,30 @@ class TimeLaggedRegressionModel:
         # Create results DataFrame
         results = df.copy()
         
-        # Align predictions with original DataFrame
-        aligned_predictions = pd.Series(index=df.index, dtype=float)
-        aligned_residuals = pd.Series(index=df.index, dtype=float)
+        # Initialize prediction columns
+        results['time_lagged_prediction'] = np.nan
+        results['time_lagged_residual'] = np.nan
         
-        # Match by timestamp
-        for idx, timestamp in enumerate(lagged_df['timestamp']):
-            mask = df['timestamp'] == timestamp
-            if mask.any():
-                aligned_predictions[mask] = predictions[idx]
-                if self.target_column in df.columns:
-                    aligned_residuals[mask] = df.loc[mask, self.target_column].iloc[0] - predictions[idx]
+        # Match predictions to original timestamps
+        for idx, row in lagged_df.iterrows():
+            timestamp = row['timestamp']
+            
+            # Find matching row in original data (next day prediction)
+            if 'target' in row:
+                # This is prediction for next timestamp
+                target_date = timestamp + timedelta(days=1)
+                mask = results['timestamp'].dt.date == target_date.date()
+                
+                if mask.any():
+                    results.loc[mask, 'time_lagged_prediction'] = predictions[idx]
+                    
+                    # Calculate residual if actual value exists
+                    if self.target_column in results.columns:
+                        actual = results.loc[mask, self.target_column].iloc[0]
+                        results.loc[mask, 'time_lagged_residual'] = actual - predictions[idx]
         
-        results['time_lagged_prediction'] = aligned_predictions
-        results['time_lagged_residual'] = aligned_residuals
+        # Forward fill predictions for visualization
+        results['time_lagged_prediction'] = results['time_lagged_prediction'].ffill()
         
         return results
     
@@ -205,46 +291,114 @@ class TimeLaggedRegressionModel:
             raise ValueError("Model must be trained before forecasting")
         
         # Get the latest data
-        latest_data = df.sort_values('timestamp').tail(self.lag_window).copy()
+        latest_data = df.sort_values('timestamp').tail(self.lag_window * 2).copy()
+        
+        if latest_data.empty:
+            model_logger.warning("No data for forecasting")
+            return pd.DataFrame()
+        
+        # Create initial lagged features
+        current_lagged = self.create_lagged_features(latest_data)
+        
+        if current_lagged.empty or 'target' not in current_lagged.columns:
+            model_logger.warning("Could not create lagged features for forecasting")
+            return pd.DataFrame()
         
         # Create forecasts
         forecasts = []
-        current_features = latest_data.copy()
+        current_features = current_lagged.copy()
         
         for i in range(horizon):
-            # Create lagged features for current point
-            lagged_current = self.create_lagged_features(current_features)
+            # Get the most recent row
+            last_row = current_features.iloc[-1:][self.feature_columns].fillna(0)
             
-            if lagged_current.empty:
+            if last_row.empty:
                 break
             
-            # Get features for prediction
-            X_current = lagged_current[self.feature_columns].fillna(0).iloc[-1:]
-            
             # Make prediction
-            forecast = self.model.predict(X_current)[0]
+            forecast = self.model.predict(last_row)[0]
             
-            # Create new timestamp
-            last_timestamp = current_features['timestamp'].iloc[-1]
-            new_timestamp = last_timestamp + timedelta(days=1)
+            # Create forecast timestamp
+            last_timestamp = current_features.iloc[-1]['timestamp']
+            forecast_timestamp = last_timestamp + timedelta(days=1)
             
             # Store forecast
             forecasts.append({
-                'timestamp': new_timestamp,
+                'timestamp': forecast_timestamp,
                 'forecast': forecast,
-                'horizon': i + 1
+                'horizon': i + 1,
+                'forecast_date': datetime.now().date()
             })
             
-            # Update current features with forecast for next iteration
-            new_row = pd.DataFrame([{
-                'timestamp': new_timestamp,
-                'weighted_stress_score': forecast,
-                'keyword_stress_score': current_features['keyword_stress_score'].iloc[-1],
-                'sentiment_polarity': current_features['sentiment_polarity'].iloc[-1]
-            }])
-            current_features = pd.concat([current_features, new_row], ignore_index=True)
+            # Create new data point for next iteration
+            new_point = latest_data.iloc[-1:].copy()
+            new_point['timestamp'] = forecast_timestamp
+            new_point['weighted_stress_score'] = forecast
+            
+            # Update latest_data for next iteration
+            latest_data = pd.concat([latest_data, new_point], ignore_index=True)
+            
+            # Recreate lagged features with new data
+            current_lagged = self.create_lagged_features(latest_data)
+            if not current_lagged.empty:
+                current_features = current_lagged.copy()
         
-        return pd.DataFrame(forecasts)
+        forecast_df = pd.DataFrame(forecasts)
+        
+        # Calculate confidence intervals
+        if not forecast_df.empty:
+            # Simple confidence intervals based on historical residuals
+            if hasattr(self, 'last_cv_rmse'):
+                std_error = self.last_cv_rmse
+            else:
+                std_error = forecast_df['forecast'].std()
+            
+            forecast_df['forecast_lower'] = forecast_df['forecast'] - 1.96 * std_error
+            forecast_df['forecast_upper'] = forecast_df['forecast'] + 1.96 * std_error
+        
+        return forecast_df
+    
+    def analyze_autocorrelation(self, df: pd.DataFrame) -> Dict:
+        """
+        Analyze autocorrelation in the time series.
+        
+        Args:
+            df: Input DataFrame
+        
+        Returns:
+            Dictionary with autocorrelation analysis
+        """
+        if 'timestamp' not in df.columns or self.target_column not in df.columns:
+            return {}
+        
+        # Prepare time series
+        ts_data = df.sort_values('timestamp').set_index('timestamp')[self.target_column]
+        
+        # Calculate autocorrelation
+        max_lag = min(30, len(ts_data) - 1)
+        autocorrelations = []
+        
+        for lag in range(1, max_lag + 1):
+            if len(ts_data) > lag:
+                autocorr = ts_data.autocorr(lag=lag)
+                if not pd.isna(autocorr):
+                    autocorrelations.append({
+                        'lag': lag,
+                        'autocorrelation': autocorr,
+                        'significant': abs(autocorr) > 2 / np.sqrt(len(ts_data))
+                    })
+        
+        # Find significant lags
+        significant_lags = [ac['lag'] for ac in autocorrelations if ac['significant']]
+        
+        analysis = {
+            'autocorrelations': autocorrelations[:20],  # First 20 lags
+            'significant_lags': significant_lags,
+            'max_autocorrelation': max([abs(ac['autocorrelation']) for ac in autocorrelations]) if autocorrelations else 0,
+            'n_samples': len(ts_data)
+        }
+        
+        return analysis
     
     def save(self, filepath: Path):
         """
@@ -274,3 +428,8 @@ class TimeLaggedRegressionModel:
         self.target_column = data['target_column']
         self.lag_window = data['lag_window']
         model_logger.info(f"Model loaded from {filepath}")
+
+
+def create_time_lagged_model():
+    """Factory function to create time-lagged regression model."""
+    return TimeLaggedRegressionModel()
