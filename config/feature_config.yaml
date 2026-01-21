@@ -1,0 +1,45 @@
+# Keywords for stress detection
+stress_keywords:
+  high_risk:
+    - recession
+    - crash
+    - collapse
+    - crisis
+    - panic
+    - selloff
+    - downturn
+    - bubble
+    - default
+    - bankruptcy
+  medium_risk:
+    - volatility
+    - uncertainty
+    - correction
+    - slowdown
+    - decline
+    - risk
+    - warning
+    - concern
+  low_risk:
+    - stable
+    - recovery
+    - growth
+    - rally
+    - bullish
+    - optimism
+    - strength
+
+# Asset categories
+asset_categories:
+  equities: ["stocks", "equities", "shares", "SPY", "QQQ"]
+  bonds: ["bonds", "treasuries", "yields", "Treasury"]
+  commodities: ["gold", "oil", "commodities", "crude"]
+  forex: ["currency", "forex", "dollar", "euro", "yen"]
+  crypto: ["crypto", "bitcoin", "ethereum", "blockchain"]
+
+# Feature weights
+weights:
+  sentiment: 0.3
+  keyword_stress: 0.4
+  volume: 0.2
+  recency: 0.1
