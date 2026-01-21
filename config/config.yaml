@@ -1,0 +1,79 @@
+# Scraping Configuration
+scraping:
+  base_url: "https://www.investing.com"
+  news_url: "https://www.investing.com/news/latest-news"
+  max_retries: 3
+  retry_delay: 5
+  timeout: 30
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  max_articles: 100
+  scrape_frequency: "daily"
+
+# Data Processing
+processing:
+  text_columns: ["headline", "snippet"]
+  date_column: "timestamp"
+  categorical_columns: ["asset_tags", "market_tags"]
+  min_text_length: 20
+  max_text_length: 1000
+
+# Feature Engineering
+features:
+  text_features:
+    - sentiment_score
+    - keyword_stress_score
+    - topic_embeddings
+  temporal_features:
+    - rolling_mean_7d
+    - rolling_volatility_7d
+    - lag_1d
+    - lag_7d
+  volume_features:
+    - articles_per_day
+    - asset_frequency
+  composite_features:
+    - weighted_stress_score
+
+# Model Parameters
+models:
+  regression:
+    linear:
+      fit_intercept: true
+    ridge:
+      alpha: 1.0
+    lasso:
+      alpha: 0.01
+    polynomial:
+      degree: 2
+    time_lagged:
+      lag_window: 7
+      
+  neural_network:
+    hidden_layers: [64, 32, 16]
+    activation: "relu"
+    dropout: 0.2
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 32
+    
+  xgboost:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+    objective: "multi:softprob"
+    num_class: 3
+    
+  knn:
+    n_neighbors: 5
+    metric: "euclidean"
+    
+  isolation_forest:
+    contamination: 0.1
+    n_estimators: 100
+
+# Dashboard
+dashboard:
+  chart_height: 500
+  date_range_default: 30
+  theme: "plotly_white"
+  color_palette: ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
