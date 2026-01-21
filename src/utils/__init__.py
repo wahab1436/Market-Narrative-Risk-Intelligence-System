@@ -1,12 +1,10 @@
 """
 Utility functions for the pipeline.
+Export names without causing circular imports.
 """
-from src.utils.logger import setup_logger, PipelineLogger
-from src.utils.config_loader import ConfigLoader, config_loader
+# DO NOT import anything here that might cause circular imports
 
 __all__ = [
-    'setup_logger',
-    'PipelineLogger',
-    'ConfigLoader',
+    'logger',
     'config_loader'
 ]
