@@ -70,7 +70,11 @@ models:
   isolation_forest:
     contamination: 0.1
     n_estimators: 100
-
+  polynomial:
+    degree: 2
+    
+  time_lagged:
+    lag_window: 7
 # Dashboard
 dashboard:
   chart_height: 500
