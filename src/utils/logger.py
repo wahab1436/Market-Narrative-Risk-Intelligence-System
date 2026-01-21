@@ -42,13 +42,17 @@ def setup_logger(
     
     # File handler
     if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(level)
-        logger.addHandler(file_handler)
+        try:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_handler.setFormatter(formatter)
+            file_handler.setLevel(level)
+            logger.addHandler(file_handler)
+        except Exception as e:
+            # If file logging fails (e.g., permission issues), just skip it
+            print(f"Warning: Could not create file handler: {e}", file=sys.stderr)
     
     # Console handler
     if console:
@@ -154,35 +158,47 @@ def setup_pipeline_logging(log_dir: str = "logs", level: str = "INFO"):
         log_dir: Directory for log files
         level: Logging level
     """
-    log_level = getattr(logging, level.upper())
-    log_dir_path = Path(log_dir)
-    log_dir_path.mkdir(exist_ok=True)
-    
-    # Setup component loggers
-    components = {
-        "scraper": get_scraper_logger(),
-        "preprocessing": get_preprocessing_logger(),
-        "models": get_model_logger(),
-        "dashboard": get_dashboard_logger(),
-        "pipeline": get_pipeline_logger()
-    }
-    
-    for component_name, logger in components.items():
-        log_file = log_dir_path / f"{component_name}.log"
+    try:
+        log_level = getattr(logging, level.upper())
+        log_dir_path = Path(log_dir)
+        log_dir_path.mkdir(exist_ok=True)
         
-        # Remove existing handlers
-        logger.logger.handlers.clear()
+        # Setup component loggers
+        components = {
+            "scraper": get_scraper_logger(),
+            "preprocessing": get_preprocessing_logger(),
+            "models": get_model_logger(),
+            "dashboard": get_dashboard_logger(),
+            "pipeline": get_pipeline_logger()
+        }
         
-        # Setup with file and console
-        setup_logger(
-            name=logger.logger.name,
-            log_file=str(log_file),
-            level=log_level,
-            console=True
-        )
-        
-        logger.info(f"Logger initialized for {component_name}")
+        for component_name, logger in components.items():
+            log_file = log_dir_path / f"{component_name}.log"
+            
+            # Remove existing handlers
+            logger.logger.handlers.clear()
+            
+            # Setup with file and console
+            setup_logger(
+                name=logger.logger.name,
+                log_file=str(log_file),
+                level=log_level,
+                console=True
+            )
+            
+            logger.info(f"Logger initialized for {component_name}")
+    except Exception as e:
+        # If setup fails, just use basic console logging
+        print(f"Warning: Could not setup pipeline logging: {e}", file=sys.stderr)
 
 
-# Set up basic logging on import
-setup_pipeline_logging()
+# Create convenience aliases for direct import
+scraper_logger = get_scraper_logger()
+preprocessing_logger = get_preprocessing_logger()
+model_logger = get_model_logger()
+dashboard_logger = get_dashboard_logger()
+pipeline_logger = get_pipeline_logger()
+
+
+# DON'T call setup_pipeline_logging() at import time
+# Let it be called explicitly when needed or use the default console logging
