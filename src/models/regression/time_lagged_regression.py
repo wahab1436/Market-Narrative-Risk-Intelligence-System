@@ -48,11 +48,15 @@ class TimeLaggedRegressionModel:
         df_sorted = df.sort_values('timestamp').copy()
         df_sorted.set_index('timestamp', inplace=True)
         
-        # Resample to daily frequency if needed
-        if len(df_sorted) > 100:  # If we have enough data
-            df_resampled = df_sorted.resample('D').mean()
+        # **FIX: Select only numeric columns before resampling**
+        numeric_cols = df_sorted.select_dtypes(include=[np.number]).columns.tolist()
+        df_numeric = df_sorted[numeric_cols]
+        
+        # Resample to daily frequency if needed (now only on numeric data)
+        if len(df_numeric) > 100:  # If we have enough data
+            df_resampled = df_numeric.resample('D').mean()
         else:
-            df_resampled = df_sorted
+            df_resampled = df_numeric
         
         # Select key features for lagging
         lag_candidates = [
@@ -67,8 +71,11 @@ class TimeLaggedRegressionModel:
         
         if not available_features:
             # Fallback to numeric columns
-            numeric_cols = df_resampled.select_dtypes(include=[np.number]).columns.tolist()
-            available_features = numeric_cols[:3]  # Use first 3 numeric columns
+            numeric_cols_list = df_resampled.select_dtypes(include=[np.number]).columns.tolist()
+            available_features = numeric_cols_list[:3] if len(numeric_cols_list) >= 3 else numeric_cols_list
+        
+        if not available_features:
+            raise ValueError("No numeric features available for time-lagged model")
         
         # Create lagged features
         lagged_data = {}
