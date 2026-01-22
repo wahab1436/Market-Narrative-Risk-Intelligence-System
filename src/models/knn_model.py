@@ -106,7 +106,7 @@ class KNNModel:
         distances, indices = self.model.kneighbors(X_scaled, n_neighbors=min(6, len(X)))
         
         # Calculate similarity metrics
-        avg_similarity = np.mean(distances[:, 1:])  # Exclude self
+        avg_similarity = np.mean(distances[:, 1:]) if len(X) > 1 else 0  # Exclude self
         
         results = {
             'n_samples': len(X),
@@ -119,8 +119,7 @@ class KNNModel:
     
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        **NEW METHOD: Predict similar periods for the input data.**
-        This wraps find_similar_periods() to maintain consistency with other models.
+        Predict similar periods for the input data.
         
         Args:
             df: Input DataFrame
@@ -138,21 +137,14 @@ class KNNModel:
         results = df.copy()
         
         # Add similarity information to the results
-        # For each row, we'll add the top similar period's information
         if len(similar_periods) > 0:
             # Get the most similar period
-            top_similar = similar_periods.iloc[0] if len(similar_periods) > 0 else None
+            top_similar = similar_periods.iloc[0]
             
-            if top_similar is not None:
-                results['most_similar_date'] = str(top_similar.get('date', 'N/A'))
-                results['similarity_score'] = top_similar.get('similarity_score', 0.0)
-                results['days_apart'] = top_similar.get('days_apart', 0)
-                results['top_similarity_features'] = top_similar.get('top_similarity_features', '[]')
-            else:
-                results['most_similar_date'] = 'N/A'
-                results['similarity_score'] = 0.0
-                results['days_apart'] = 0
-                results['top_similarity_features'] = '[]'
+            results['most_similar_date'] = str(top_similar.get('date', 'N/A'))
+            results['similarity_score'] = top_similar.get('similarity_score', 0.0)
+            results['days_apart'] = top_similar.get('days_apart', 0)
+            results['top_similarity_features'] = top_similar.get('top_similarity_features', '[]')
         else:
             results['most_similar_date'] = 'N/A'
             results['similarity_score'] = 0.0
@@ -183,6 +175,7 @@ class KNNModel:
         # Scale features
         X_scaled = self.scaler.transform(X)
         
+        # **FIXED: Handle target_idx as integer, not array**
         if target_date is None:
             # Use the most recent period
             target_idx = len(daily_features) - 1
@@ -196,12 +189,7 @@ class KNNModel:
                 return pd.DataFrame()
             target_idx = matching_rows[0]
         
-        # Ensure target_idx is valid
-        if target_idx < 0 or target_idx >= len(X_scaled):
-            model_logger.warning(f"Target date {target_date} not found in data")
-            return pd.DataFrame()
-        
-        # Ensure target_idx is valid
+        # **FIXED: Validate target_idx is valid integer**
         if target_idx < 0 or target_idx >= len(X_scaled):
             model_logger.warning(f"Invalid target index {target_idx}")
             return pd.DataFrame()
@@ -216,6 +204,7 @@ class KNNModel:
         # Prepare results
         similar_periods = []
         for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
+            # **FIXED: Compare idx with target_idx (both are integers now)**
             if idx == target_idx:
                 continue  # Skip self
             
@@ -235,7 +224,10 @@ class KNNModel:
                 feature_diffs = np.abs(target_feature_values - period_feature_values)
                 
                 # Normalize differences
-                feature_contributions = feature_diffs / np.sum(feature_diffs)
+                if np.sum(feature_diffs) > 0:
+                    feature_contributions = feature_diffs / np.sum(feature_diffs)
+                else:
+                    feature_contributions = np.zeros_like(feature_diffs)
                 
                 # Add top contributing features
                 top_features_idx = np.argsort(feature_contributions)[-3:][::-1]
