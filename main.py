@@ -8,6 +8,8 @@ from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
 import importlib
+import gc
+import os
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -115,6 +117,135 @@ class PipelineOrchestrator:
             for directory in directories:
                 directory.mkdir(parents=True, exist_ok=True)
                 self.logger.debug(f"Ensured directory exists: {directory}")
+    
+    def _cleanup_neural_network_resources(self):
+        """
+        CRITICAL FIX: Clean up neural network resources to prevent hanging.
+        This forces TensorFlow/Keras to release GPU/CPU memory.
+        """
+        self.logger.info("Cleaning up neural network resources...")
+        
+        try:
+            # Try to import TensorFlow and clean up
+            import tensorflow as tf
+            from keras import backend as K
+            
+            # Clear Keras session
+            K.clear_session()
+            
+            # Release GPU memory if available
+            if hasattr(tf, 'config') and hasattr(tf.config, 'experimental'):
+                try:
+                    # Set memory growth to prevent OOM
+                    gpus = tf.config.list_physical_devices('GPU')
+                    if gpus:
+                        for gpu in gpus:
+                            tf.config.experimental.set_memory_growth(gpu, True)
+                        self.logger.info("Set GPU memory growth for TensorFlow")
+                except:
+                    pass
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Try to release CUDA memory
+            try:
+                import numba.cuda
+                numba.cuda.select_device(0)
+                numba.cuda.close()
+                self.logger.info("Released CUDA memory via numba")
+            except:
+                pass
+                
+        except ImportError:
+            self.logger.warning("TensorFlow/Keras not available for cleanup")
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up neural network resources: {e}")
+        
+        # Force Python garbage collection
+        gc.collect()
+        self.logger.info("Neural network resource cleanup completed")
+    
+    def _run_model_in_isolation(self, model_name: str, model_class, df: pd.DataFrame):
+        """
+        Run a model in isolation to prevent resource conflicts.
+        Uses subprocess to ensure complete resource cleanup.
+        """
+        self.logger.info(f"Running {model_name} in isolated subprocess...")
+        
+        try:
+            # Create a temporary script to run the model
+            temp_script = Path(f"temp_{model_name}_{self.timestamp}.py")
+            
+            script_content = f'''
+import sys
+import pandas as pd
+import pickle
+from pathlib import Path
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+# Import model class
+{"from src.models.neural_network import NeuralNetworkModel" if model_name == 'neural_network' else f'from src.models.{model_name.split("_")[0]}_model import {model_name.title().replace("_", "")}Model'}
+
+# Load data
+df = pd.read_parquet("{self.gold_path}")
+
+# Initialize and train model
+model = {'NeuralNetworkModel()' if model_name == 'neural_network' else f'{model_name.title().replace("_", "")}Model()'}
+results = model.train(df)
+predictions = model.predict(df)
+
+# Save results
+results_path = Path("temp_results") / f"{model_name}_results.pkl"
+results_path.parent.mkdir(exist_ok=True)
+
+with open(results_path, 'wb') as f:
+    pickle.dump({{
+        'results': results,
+        'predictions': predictions,
+        'model_name': model_name
+    }}, f)
+
+print(f"{{model_name}} completed successfully")
+'''
+            
+            temp_script.write_text(script_content)
+            
+            # Run in subprocess
+            result = subprocess.run(
+                [sys.executable, str(temp_script)],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
+            
+            # Clean up temp script
+            temp_script.unlink(missing_ok=True)
+            
+            if result.returncode == 0:
+                # Load results
+                results_path = Path("temp_results") / f"{model_name}_results.pkl"
+                if results_path.exists():
+                    import pickle
+                    with open(results_path, 'rb') as f:
+                        data = pickle.load(f)
+                    
+                    # Clean up temp results
+                    results_path.unlink(missing_ok=True)
+                    (results_path.parent).rmdir()
+                    
+                    return data['results'], data['predictions']
+            else:
+                self.logger.error(f"{model_name} subprocess failed: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"{model_name} subprocess timed out after 5 minutes")
+        except Exception as e:
+            self.logger.error(f"Failed to run {model_name} in isolation: {e}")
+        
+        return None, None
     
     def run_scraping(self) -> bool:
         """
@@ -282,58 +413,81 @@ class PipelineOrchestrator:
                 df = pd.read_parquet(self.gold_path)
                 self.logger.info(f"Loaded {len(df)} records with {len(df.columns)} features for model training")
                 
-                # Initialize all models
-                models = {
-                    'linear_regression': LinearRegressionModel(),
-                    'ridge_regression': RidgeRegressionModel(),
-                    'lasso_regression': LassoRegressionModel(),
-                    'polynomial_regression': PolynomialRegressionModel(),
-                    'time_lagged_regression': TimeLaggedRegressionModel(),
-                    'neural_network': NeuralNetworkModel(),
-                    'xgboost': XGBoostModel(),
-                    'knn': KNNModel(),
-                    'isolation_forest': IsolationForestModel()
-                }
+                # Define models in order - run neural network first, XGBoost later
+                models = [
+                    ('linear_regression', LinearRegressionModel),
+                    ('ridge_regression', RidgeRegressionModel),
+                    ('lasso_regression', LassoRegressionModel),
+                    ('polynomial_regression', PolynomialRegressionModel),
+                    ('time_lagged_regression', TimeLaggedRegressionModel),
+                    ('neural_network', NeuralNetworkModel),  # Will be cleaned up before XGBoost
+                    ('xgboost', XGBoostModel),
+                    ('knn', KNNModel),
+                    ('isolation_forest', IsolationForestModel)
+                ]
                 
                 # Train models and collect predictions
                 predictions_dfs = []
                 model_metrics = {}
                 
-                for model_name, model in models.items():
+                for model_name, ModelClass in models:
                     with LoggingContext(self.logger, f"{model_name}_training"):
                         try:
                             self.logger.info(f"Training {model_name}")
                             
-                            # Train model
-                            results = model.train(df)
-                            
-                            # Make predictions
-                            predictions = model.predict(df)
+                            # CRITICAL: If running neural network, clean up resources afterwards
+                            if model_name == 'neural_network':
+                                self.logger.warning("Training neural network - will force cleanup afterwards")
+                                
+                                # Option 1: Run in isolation (recommended but slower)
+                                # results, predictions = self._run_model_in_isolation(model_name, ModelClass, df)
+                                
+                                # Option 2: Run normally but force cleanup
+                                model = ModelClass()
+                                results = model.train(df)
+                                predictions = model.predict(df)
+                                
+                                # FORCE cleanup of neural network resources
+                                self._cleanup_neural_network_resources()
+                                
+                            else:
+                                # Run other models normally
+                                model = ModelClass()
+                                results = model.train(df)
+                                predictions = model.predict(df)
                             
                             # Extract prediction columns
-                            pred_cols = [col for col in predictions.columns 
-                                       if any(x in col for x in ['prediction', 'regime', 'anomaly', 'similarity', 'forecast'])]
-                            
-                            if pred_cols:
-                                predictions_subset = predictions[['timestamp'] + pred_cols]
-                                predictions_dfs.append(predictions_subset)
-                                self.logger.info(f"{model_name} trained successfully")
+                            if predictions is not None:
+                                pred_cols = [col for col in predictions.columns 
+                                           if any(x in col for x in ['prediction', 'regime', 'anomaly', 'similarity', 'forecast'])]
                                 
-                                # Store model metrics
-                                model_metrics[model_name] = {
-                                    'status': 'success',
-                                    'predictions': len(predictions_subset)
-                                }
-                                
-                                # Save model
-                                model_dir = Path("models")
-                                model_dir.mkdir(exist_ok=True)
-                                model.save(model_dir / f"{model_name}_{self.timestamp}.joblib")
-                                self.logger.info(f"Model saved to models/{model_name}_{self.timestamp}.joblib")
+                                if pred_cols:
+                                    predictions_subset = predictions[['timestamp'] + pred_cols]
+                                    predictions_dfs.append(predictions_subset)
+                                    self.logger.info(f"{model_name} trained successfully")
+                                    
+                                    # Store model metrics
+                                    model_metrics[model_name] = {
+                                        'status': 'success',
+                                        'predictions': len(predictions_subset)
+                                    }
+                                    
+                                    # Save model
+                                    model_dir = Path("models")
+                                    model_dir.mkdir(exist_ok=True)
+                                    model.save(model_dir / f"{model_name}_{self.timestamp}.joblib")
+                                    self.logger.info(f"Model saved to models/{model_name}_{self.timestamp}.joblib")
+                                        
+                                else:
+                                    self.logger.warning(f"{model_name} produced no predictions")
+                                    model_metrics[model_name] = {'status': 'no_predictions'}
                                     
                             else:
-                                self.logger.warning(f"{model_name} produced no predictions")
+                                self.logger.warning(f"{model_name} returned no predictions")
                                 model_metrics[model_name] = {'status': 'no_predictions'}
+                                
+                            # Force garbage collection between models
+                            gc.collect()
                                 
                         except Exception as e:
                             self.logger.error(f"{model_name} training failed: {e}", exc_info=True)
@@ -376,6 +530,9 @@ class PipelineOrchestrator:
                     
                     self.logger.info(f"All model predictions saved to: {predictions_path}")
                     print(f"✓ Model training completed: {predictions_path}")
+                    
+                    # Final cleanup
+                    self._cleanup_neural_network_resources()
                     
                     return final_predictions
                 else:
@@ -499,6 +656,7 @@ def main():
     parser.add_argument("--clean-only", action="store_true", help="Run only cleaning step")
     parser.add_argument("--features-only", action="store_true", help="Run only feature engineering")
     parser.add_argument("--train-only", action="store_true", help="Run only model training")
+    parser.add_argument("--skip-nn", action="store_true", help="Skip neural network to prevent hanging")
     
     args = parser.parse_args()
     
