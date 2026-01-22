@@ -1,46 +1,27 @@
 """
-Main pipeline orchestrator - Updated to prevent multiple concurrent runs and resource deadlocks.
+Main pipeline orchestrator for Market Narrative Risk Intelligence System.
 """
 import sys
-import argparse
 import subprocess
+import threading
+import webbrowser
+import time
 from pathlib import Path
 from datetime import datetime
-from contextlib import contextmanager
-import importlib
-import gc
-import os
-import fcntl  # For file locking
-import time
+import pandas as pd
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Import critical dependencies first
-import pandas as pd
-import numpy as np
+from src.utils.logger import loggers, get_pipeline_logger, LoggingContext, setup_pipeline_logging
+from src.utils.config_loader import config_loader, get_value
 
-# IMPORTANT: Initialize config_loader FIRST before any other imports
-from src.utils.config_loader import config_loader
+# Import pipeline components
+from src.scraper.investing_scraper import InvestingScraper, scrape_and_save
+from src.preprocessing.clean_data import DataCleaner, clean_and_save
+from src.preprocessing.feature_engineering import FeatureEngineer, engineer_and_save
 
-# **CRITICAL FIX: Force reload of model modules to pick up changes**
-# This clears the module cache so updated files are reloaded
-model_modules = [
-    'src.models.regression.time_lagged_regression',
-    'src.models.xgboost_model',
-    'src.models.knn_model',
-    'src.models.isolation_forest'
-]
-
-for module_name in model_modules:
-    if module_name in sys.modules:
-        del sys.modules[module_name]
-
-# Now import everything else
-from src.utils.logger import get_pipeline_logger, setup_pipeline_logging
-from src.scraper import scrape_and_save
-from src.preprocessing.clean_data import clean_and_save
-from src.preprocessing.feature_engineering import engineer_and_save
+# Import models
 from src.models.regression.linear_regression import LinearRegressionModel
 from src.models.regression.ridge_regression import RidgeRegressionModel
 from src.models.regression.lasso_regression import LassoRegressionModel
@@ -50,74 +31,9 @@ from src.models.neural_network import NeuralNetworkModel
 from src.models.xgboost_model import XGBoostModel
 from src.models.knn_model import KNNModel
 from src.models.isolation_forest import IsolationForestModel
+
 from src.explainability.shap_analysis import SHAPAnalyzer
-
-
-@contextmanager
-def LoggingContext(logger, context_name: str):
-    """Context manager for logging."""
-    logger.info(f"Starting {context_name}")
-    try:
-        yield
-    finally:
-        logger.info(f"Completed {context_name}")
-
-
-class PipelineLock:
-    """
-    File-based lock to prevent multiple pipeline instances.
-    """
-    
-    def __init__(self, lock_file: Path = Path("pipeline.lock")):
-        self.lock_file = lock_file
-        self.lock_fd = None
-        
-    def acquire(self, timeout: int = 60) -> bool:
-        """
-        Acquire the pipeline lock.
-        
-        Args:
-            timeout: Maximum time to wait for lock (seconds)
-            
-        Returns:
-            True if lock acquired, False otherwise
-        """
-        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            self.lock_fd = open(self.lock_file, 'w')
-            
-            # Try to acquire lock
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                try:
-                    fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    # Write current process info
-                    self.lock_fd.write(f"PID: {os.getpid()}\n")
-                    self.lock_fd.write(f"Time: {datetime.now().isoformat()}\n")
-                    self.lock_fd.flush()
-                    return True
-                except (IOError, BlockingIOError):
-                    time.sleep(1)
-                    continue
-                    
-            # Timeout reached
-            self.lock_fd.close()
-            return False
-            
-        except Exception as e:
-            print(f"Failed to acquire lock: {e}")
-            return False
-    
-    def release(self):
-        """Release the pipeline lock."""
-        if self.lock_fd:
-            try:
-                fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
-                self.lock_fd.close()
-                self.lock_file.unlink(missing_ok=True)
-            except:
-                pass
+from src.eda.visualization import EDAVisualizer
 
 
 class PipelineOrchestrator:
@@ -132,532 +48,662 @@ class PipelineOrchestrator:
         Args:
             run_all: Whether to run all pipeline steps
         """
-        # Get config
         self.config = config_loader.get_config("config")
-        
-        # Setup logging based on config
-        log_level = self.config.get('logging', {}).get('level', 'INFO')
-        setup_pipeline_logging(level=log_level)
-        
-        self.logger = get_pipeline_logger()
         self.run_all = run_all
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Pipeline lock to prevent multiple concurrent runs
-        self.pipeline_lock = PipelineLock()
+        self.logger = get_pipeline_logger()
         
         # File paths
         self.bronze_path = None
         self.silver_path = None
         self.gold_path = None
-        
-        # Execution metrics
-        self.execution_metrics = {}
-        
-        # Check if another pipeline is running
-        if not self.pipeline_lock.acquire(timeout=5):
-            self.logger.warning("Another pipeline is already running. Skipping execution.")
-            print("⚠ Another pipeline is already running. Skipping execution.")
-            self._skip_execution = True
-            return
-        else:
-            self._skip_execution = False
+        self.predictions_path = None
         
         print("=" * 80)
         print("MARKET NARRATIVE RISK INTELLIGENCE SYSTEM")
         print("=" * 80)
-        self.logger.info("PipelineOrchestrator initialized")
         
-        # Setup directories
-        self._setup_directories()
+        with LoggingContext(self.logger, "pipeline_initialization"):
+            self.logger.info("PipelineOrchestrator initialized")
     
-    def __del__(self):
-        """Cleanup when orchestrator is destroyed."""
-        if hasattr(self, 'pipeline_lock'):
-            self.pipeline_lock.release()
-    
-    def _setup_directories(self):
-        """Create necessary directories for the pipeline."""
+    def setup_directories(self):
+        """Create necessary directories."""
         with LoggingContext(self.logger, "directory_setup"):
             directories = [
-                Path("data/bronze"),
-                Path("data/silver"),
-                Path("data/gold"),
-                Path("logs"),
-                Path("models"),
-                Path("config"),
-                Path("tests"),
-                Path("docs")
+                'data/bronze',
+                'data/silver', 
+                'data/gold',
+                'logs',
+                'models',
+                'config'
             ]
             
             for directory in directories:
-                directory.mkdir(parents=True, exist_ok=True)
-                self.logger.debug(f"Ensured directory exists: {directory}")
-    
-    def _cleanup_neural_network_resources(self):
-        """
-        CRITICAL FIX: Clean up neural network resources to prevent hanging.
-        This forces TensorFlow/Keras to release GPU/CPU memory.
-        """
-        self.logger.info("Cleaning up neural network resources...")
-        
-        try:
-            # Try to import TensorFlow and clean up
-            import tensorflow as tf
-            from keras import backend as K
+                Path(directory).mkdir(parents=True, exist_ok=True)
             
-            # Clear Keras session
-            K.clear_session()
-            
-            # Release GPU memory if available
-            if hasattr(tf, 'config') and hasattr(tf.config, 'experimental'):
-                try:
-                    gpus = tf.config.list_physical_devices('GPU')
-                    if gpus:
-                        for gpu in gpus:
-                            tf.config.experimental.set_memory_growth(gpu, True)
-                        self.logger.info("Set GPU memory growth for TensorFlow")
-                except:
-                    pass
-            
-            # Force garbage collection
-            gc.collect()
-            
-        except ImportError:
-            self.logger.warning("TensorFlow/Keras not available for cleanup")
-        except Exception as e:
-            self.logger.warning(f"Failed to clean up neural network resources: {e}")
-        
-        # Force Python garbage collection
-        gc.collect()
-        self.logger.info("Neural network resource cleanup completed")
+            self.logger.info("Directories created")
     
     def run_scraping(self) -> bool:
         """
-        Execute scraping phase to collect news data.
+        Run scraping step.
         
         Returns:
             True if successful, False otherwise
         """
-        if self._skip_execution:
-            return False
-            
         with LoggingContext(self.logger, "scraping_phase"):
+            print("\n[1/6] SCRAPING")
+            print("-" * 40)
+            
+            self.logger.info("Starting scraping phase")
+            
+            # Get scraping configuration
+            scraping_config = config_loader.get_scraping_config()
+            use_selenium = scraping_config.get('use_selenium', False)
+            self.logger.info(f"Scraping configuration: use_selenium={use_selenium}")
+            
+            # Run scraping
+            scraper = InvestingScraper(use_selenium=use_selenium)
+            
             try:
-                self.logger.info("Starting scraping phase")
+                articles = scraper.scrape_latest_news()
                 
-                # Get scraping configuration
-                scraping_config = config_loader.get_scraping_config()
-                use_selenium = scraping_config.get("use_selenium", False)
-                
-                self.logger.info(f"Scraping configuration: use_selenium={use_selenium}")
-                
-                # Execute scraping
-                self.bronze_path = scrape_and_save()
-                
-                if self.bronze_path:
-                    self.logger.info(f"Scraping completed successfully: {self.bronze_path}")
+                if articles:
+                    scraper.save_to_bronze(articles)
                     
-                    # Log metrics
-                    df = pd.read_parquet(self.bronze_path)
-                    self.execution_metrics['scraping'] = {
-                        'articles_collected': len(df),
-                        'date_range': f"{df['timestamp'].min()} to {df['timestamp'].max()}",
-                        'file_size_mb': Path(self.bronze_path).stat().st_size / 1024 / 1024
-                    }
-                    
-                    print(f"✓ Scraping completed: {self.bronze_path}")
-                    return True
+                    # Return path to latest file
+                    bronze_dir = Path("data/bronze")
+                    files = list(bronze_dir.glob("*.parquet"))
+                    if files:
+                        self.bronze_path = max(files, key=lambda x: x.stat().st_mtime)
+                        self.logger.info(f"Scraping completed successfully: {self.bronze_path}")
+                        print(f"✓ Scraping completed: {self.bronze_path}")
+                        return True
                 else:
-                    self.logger.warning("Scraping completed but no data was collected")
+                    self.logger.warning("No articles collected")
+                    print("✗ Scraping failed: No articles collected")
                     return False
                     
             except Exception as e:
-                self.logger.error(f"Scraping failed: {e}", exc_info=True)
+                self.logger.error(f"Scraping failed: {e}")
                 print(f"✗ Scraping failed: {e}")
                 return False
+            finally:
+                scraper.close()
     
     def run_cleaning(self) -> bool:
         """
-        Execute data cleaning and validation phase.
+        Run data cleaning step.
         
         Returns:
             True if successful, False otherwise
         """
-        if self._skip_execution:
-            return False
-            
         with LoggingContext(self.logger, "cleaning_phase"):
+            print("\n[2/6] DATA CLEANING")
+            print("-" * 40)
+            
+            self.logger.info("Starting data cleaning phase")
+            
             try:
-                self.logger.info("Starting data cleaning phase")
+                cleaner = DataCleaner()
                 
-                # If no bronze path specified, find latest
                 if self.bronze_path is None:
+                    # Find latest bronze file
                     bronze_dir = Path("data/bronze")
                     files = list(bronze_dir.glob("*.parquet"))
                     if not files:
-                        self.logger.error("No bronze files found for cleaning")
+                        self.logger.error("No bronze files found")
                         return False
                     self.bronze_path = max(files, key=lambda x: x.stat().st_mtime)
-                    self.logger.info(f"Using latest bronze file: {self.bronze_path}")
                 
-                # Execute cleaning
-                self.silver_path = clean_and_save(self.bronze_path)
+                df = cleaner.load_bronze_data(self.bronze_path)
+                valid_df, invalid_df = cleaner.validate_data(df)
+                cleaned_df = cleaner.clean_dataframe(valid_df)
+                self.silver_path = cleaner.save_to_silver(cleaned_df)
                 
-                if self.silver_path:
-                    self.logger.info(f"Data cleaning completed successfully: {self.silver_path}")
-                    
-                    # Log metrics
-                    df = pd.read_parquet(self.silver_path)
-                    original_df = pd.read_parquet(self.bronze_path)
-                    
-                    self.execution_metrics['cleaning'] = {
-                        'original_records': len(original_df),
-                        'cleaned_records': len(df),
-                        'records_removed': len(original_df) - len(df),
-                        'removal_percentage': ((len(original_df) - len(df)) / len(original_df)) * 100,
-                        'file_size_mb': Path(self.silver_path).stat().st_size / 1024 / 1024
-                    }
-                    
-                    print(f"✓ Cleaning completed: {self.silver_path}")
-                    return True
-                else:
-                    self.logger.warning("Cleaning completed but no valid data")
-                    return False
-                    
+                self.logger.info(f"Data cleaning completed successfully: {self.silver_path}")
+                print(f"✓ Cleaning completed: {self.silver_path}")
+                return True
+                
             except Exception as e:
-                self.logger.error(f"Data cleaning failed: {e}", exc_info=True)
+                self.logger.error(f"Data cleaning failed: {e}")
                 print(f"✗ Cleaning failed: {e}")
                 return False
     
     def run_feature_engineering(self) -> bool:
         """
-        Execute feature engineering phase.
+        Run feature engineering step.
         
         Returns:
             True if successful, False otherwise
         """
-        if self._skip_execution:
-            return False
-            
         with LoggingContext(self.logger, "feature_engineering_phase"):
+            print("\n[3/6] FEATURE ENGINEERING")
+            print("-" * 40)
+            
+            self.logger.info("Starting feature engineering phase")
+            
             try:
-                self.logger.info("Starting feature engineering phase")
+                engineer = FeatureEngineer()
                 
-                # If no silver path specified, find latest
                 if self.silver_path is None:
+                    # Find latest silver file
                     silver_dir = Path("data/silver")
                     files = list(silver_dir.glob("*.parquet"))
                     if not files:
-                        self.logger.error("No silver files found for feature engineering")
+                        self.logger.error("No silver files found")
                         return False
                     self.silver_path = max(files, key=lambda x: x.stat().st_mtime)
-                    self.logger.info(f"Using latest silver file: {self.silver_path}")
                 
-                # Execute feature engineering
-                self.gold_path = engineer_and_save(self.silver_path)
+                df = engineer.load_silver_data(self.silver_path)
+                feature_df = engineer.engineer_features(df)
+                self.gold_path = engineer.save_to_gold(feature_df)
                 
-                if self.gold_path:
-                    self.logger.info(f"Feature engineering completed successfully: {self.gold_path}")
-                    
-                    # Log metrics
-                    df = pd.read_parquet(self.gold_path)
-                    
-                    self.execution_metrics['feature_engineering'] = {
-                        'records_processed': len(df),
-                        'features_created': len(df.columns),
-                        'numeric_features': len(df.select_dtypes(include=[np.number]).columns),
-                        'file_size_mb': Path(self.gold_path).stat().st_size / 1024 / 1024
-                    }
-                    
-                    print(f"✓ Feature engineering completed: {self.gold_path}")
-                    return True
-                else:
-                    self.logger.warning("Feature engineering completed but no features created")
-                    return False
-                    
+                self.logger.info(f"Feature engineering completed successfully: {self.gold_path}")
+                print(f"✓ Feature engineering completed: {self.gold_path}")
+                return True
+                
             except Exception as e:
-                self.logger.error(f"Feature engineering failed: {e}", exc_info=True)
+                self.logger.error(f"Feature engineering failed: {e}")
                 print(f"✗ Feature engineering failed: {e}")
                 return False
     
     def run_model_training(self) -> pd.DataFrame:
         """
-        Execute model training phase for all models.
+        Run all model training steps.
         
         Returns:
             DataFrame with all predictions
         """
-        if self._skip_execution:
-            return pd.DataFrame()
-            
         with LoggingContext(self.logger, "model_training_phase"):
-            try:
-                self.logger.info("Starting model training phase")
-                
-                # If no gold path specified, find latest
-                if self.gold_path is None:
-                    gold_dir = Path("data/gold")
-                    files = list(gold_dir.glob("features_*.parquet"))
-                    if not files:
-                        self.logger.error("No gold files found for model training")
-                        return pd.DataFrame()
-                    self.gold_path = max(files, key=lambda x: x.stat().st_mtime)
-                    self.logger.info(f"Using latest gold file: {self.gold_path}")
-                
-                # Load gold layer data
-                self.logger.info(f"Loading data from {self.gold_path}")
-                df = pd.read_parquet(self.gold_path)
-                self.logger.info(f"Loaded {len(df)} records with {len(df.columns)} features for model training")
-                
-                # Initialize all models
-                models = {
-                    'linear_regression': LinearRegressionModel(),
-                    'ridge_regression': RidgeRegressionModel(),
-                    'lasso_regression': LassoRegressionModel(),
-                    'polynomial_regression': PolynomialRegressionModel(),
-                    'time_lagged_regression': TimeLaggedRegressionModel(),
-                    'neural_network': NeuralNetworkModel(),
-                    'xgboost': XGBoostModel(),
-                    'knn': KNNModel(),
-                    'isolation_forest': IsolationForestModel()
-                }
-                
-                # Train models and collect predictions
-                predictions_dfs = []
-                model_metrics = {}
-                
-                for model_name, model in models.items():
-                    with LoggingContext(self.logger, f"{model_name}_training"):
-                        try:
-                            self.logger.info(f"Training {model_name}")
-                            
-                            # Train model
-                            results = model.train(df)
-                            
-                            # Make predictions
-                            predictions = model.predict(df)
-                            
-                            # CRITICAL: Force cleanup after neural network to prevent hanging
-                            if model_name == 'neural_network':
-                                self._cleanup_neural_network_resources()
-                            
-                            # Extract prediction columns
-                            pred_cols = [col for col in predictions.columns 
-                                       if any(x in col for x in ['prediction', 'regime', 'anomaly', 'similarity', 'forecast'])]
-                            
-                            if pred_cols:
-                                predictions_subset = predictions[['timestamp'] + pred_cols]
-                                predictions_dfs.append(predictions_subset)
-                                self.logger.info(f"{model_name} trained successfully")
-                                
-                                # Store model metrics
-                                model_metrics[model_name] = {
-                                    'status': 'success',
-                                    'predictions': len(predictions_subset)
-                                }
-                                
-                                # Save model
-                                model_dir = Path("models")
-                                model_dir.mkdir(exist_ok=True)
-                                model.save(model_dir / f"{model_name}_{self.timestamp}.joblib")
-                                self.logger.info(f"Model saved to models/{model_name}_{self.timestamp}.joblib")
-                                    
-                            else:
-                                self.logger.warning(f"{model_name} produced no predictions")
-                                model_metrics[model_name] = {'status': 'no_predictions'}
-                                
-                        except Exception as e:
-                            self.logger.error(f"{model_name} training failed: {e}", exc_info=True)
-                            model_metrics[model_name] = {'status': 'failed', 'error': str(e)}
-                            continue
-                
-                # Merge all predictions
-                if predictions_dfs:
-                    # Start with timestamp
-                    final_predictions = df[['timestamp']].copy()
+            print("\n[4/6] MODEL TRAINING")
+            print("-" * 40)
+            
+            self.logger.info("Starting model training phase")
+            
+            # Load gold layer data
+            if self.gold_path is None:
+                # Find latest gold file
+                gold_dir = Path("data/gold")
+                files = list(gold_dir.glob("*.parquet"))
+                if not files:
+                    self.logger.error("No gold files found")
+                    return pd.DataFrame()
+                self.gold_path = max(files, key=lambda x: x.stat().st_mtime)
+            
+            self.logger.info(f"Loading data from {self.gold_path}")
+            df = pd.read_parquet(self.gold_path)
+            print(f"✓ Loaded {len(df)} records with {len(df.columns)} features for model training")
+            self.logger.info(f"Loaded {len(df)} records with {len(df.columns)} features for model training")
+            
+            # Initialize models
+            models = {
+                'linear_regression': LinearRegressionModel(),
+                'ridge_regression': RidgeRegressionModel(),
+                'lasso_regression': LassoRegressionModel(),
+                'polynomial_regression': PolynomialRegressionModel(),
+                'time_lagged_regression': TimeLaggedRegressionModel(),
+                'neural_network': NeuralNetworkModel(),
+                'xgboost': XGBoostModel(),
+                'knn': KNNModel(),
+                'isolation_forest': IsolationForestModel()
+            }
+            
+            # Train models and collect predictions
+            predictions_dfs = []
+            model_results = {}
+            
+            for model_name, model in models.items():
+                with LoggingContext(self.logger, f"{model_name}_training"):
+                    print(f"\n  Training {model_name.replace('_', ' ').title()}...")
+                    self.logger.info(f"Training {model_name}")
                     
-                    # Merge all prediction columns
-                    for pred_df in predictions_dfs:
-                        final_predictions = final_predictions.merge(
-                            pred_df,
-                            on='timestamp',
-                            how='left'
-                        )
-                    
-                    # Add original features
-                    feature_cols = [col for col in df.columns if col != 'timestamp']
+                    try:
+                        # Train model
+                        results = model.train(df)
+                        model_results[model_name] = results
+                        
+                        # Make predictions
+                        predictions = model.predict(df)
+                        
+                        # Extract relevant prediction columns
+                        pred_cols = [col for col in predictions.columns 
+                                   if any(x in col for x in ['prediction', 'regime', 'anomaly', 'similarity', 'residual'])]
+                        
+                        # Save predictions
+                        if pred_cols:
+                            predictions_subset = predictions[['timestamp'] + pred_cols]
+                            predictions_dfs.append(predictions_subset)
+                            print(f"  ✓ {model_name} trained successfully")
+                            self.logger.info(f"{model_name} trained successfully")
+                        
+                        # Save model
+                        model_path = Path(f"models/{model_name}_{self.timestamp}.joblib")
+                        model.save(model_path)
+                        self.logger.info(f"Model saved to {model_path}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"{model_name} training failed: {e}")
+                        print(f"  ✗ {model_name} failed: {e}")
+                        continue
+            
+            # Merge all predictions
+            if predictions_dfs:
+                # Start with timestamp
+                final_predictions = df[['timestamp']].copy()
+                
+                # Merge all prediction columns
+                for pred_df in predictions_dfs:
                     final_predictions = final_predictions.merge(
-                        df[['timestamp'] + feature_cols],
+                        pred_df,
                         on='timestamp',
                         how='left'
                     )
-                    
-                    # Save predictions
-                    predictions_path = Path("data/gold") / f"predictions_{self.timestamp}.parquet"
-                    final_predictions.to_parquet(predictions_path, index=False)
-                    
-                    # Store execution metrics
-                    self.execution_metrics['model_training'] = {
-                        'models_trained': len([m for m in model_metrics.values() if m['status'] == 'success']),
-                        'models_failed': len([m for m in model_metrics.values() if m['status'] == 'failed']),
-                        'total_predictions': len(final_predictions),
-                        'prediction_columns': len([c for c in final_predictions.columns if any(x in c for x in ['prediction', 'regime', 'anomaly'])]),
-                        'predictions_file': str(predictions_path)
-                    }
-                    
-                    self.logger.info(f"All model predictions saved to: {predictions_path}")
-                    print(f"✓ Model training completed: {predictions_path}")
-                    
-                    return final_predictions
-                else:
-                    self.logger.warning("No models were successfully trained")
-                    self.execution_metrics['model_training'] = {
-                        'models_trained': 0,
-                        'models_failed': len(model_metrics),
-                        'total_predictions': 0
-                    }
-                    return pd.DataFrame()
-                    
-            except Exception as e:
-                self.logger.error(f"Model training phase failed: {e}", exc_info=True)
-                print(f"✗ Model training failed: {e}")
+                
+                # Add original features
+                feature_cols = [col for col in df.columns if col not in ['timestamp']]
+                final_predictions = final_predictions.merge(
+                    df[['timestamp'] + feature_cols],
+                    on='timestamp',
+                    how='left'
+                )
+                
+                # Save predictions
+                self.predictions_path = Path("data/gold") / f"predictions_{self.timestamp}.parquet"
+                final_predictions.to_parquet(self.predictions_path, index=False)
+                
+                print(f"\n✓ All model predictions saved to: {self.predictions_path}")
+                self.logger.info(f"Predictions saved to {self.predictions_path}")
+                
+                return final_predictions
+            else:
+                print("\n✗ No models were successfully trained")
+                self.logger.warning("No models were successfully trained")
                 return pd.DataFrame()
+    
+    def run_explainability(self, df: pd.DataFrame):
+        """
+        Run SHAP explainability analysis.
+        
+        Args:
+            df: DataFrame with predictions
+        """
+        if df.empty:
+            self.logger.warning("No data for explainability analysis")
+            return
+        
+        with LoggingContext(self.logger, "explainability_phase"):
+            print("\n[5/6] MODEL EXPLAINABILITY")
+            print("-" * 40)
+            
+            self.logger.info("Starting SHAP analysis")
+            
+            try:
+                shap_analyzer = SHAPAnalyzer()
+                
+                # Load trained models for SHAP analysis
+                models_dir = Path("models")
+                model_files = list(models_dir.glob(f"*_{self.timestamp}.joblib"))
+                
+                if not model_files:
+                    self.logger.warning("No trained models found for SHAP analysis")
+                    print("✗ No trained models found for SHAP analysis")
+                    return
+                
+                # Prepare feature data for SHAP
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                exclude_cols = ['weighted_stress_score', 'sentiment_polarity', 'vader_compound']
+                feature_cols = [col for col in numeric_cols if col not in exclude_cols]
+                
+                if not feature_cols:
+                    self.logger.warning("No features available for SHAP analysis")
+                    return
+                
+                X = df[feature_cols].fillna(0)
+                
+                # Analyze each model
+                for model_file in model_files[:3]:  # Limit to 3 models for performance
+                    model_name = model_file.stem.replace(f"_{self.timestamp}", "")
+                    
+                    try:
+                        # Run SHAP analysis based on model type
+                        if 'linear' in model_name or 'ridge' in model_name or 'lasso' in model_name:
+                            # Load linear model
+                            if 'linear' in model_name:
+                                model_obj = LinearRegressionModel()
+                            elif 'ridge' in model_name:
+                                model_obj = RidgeRegressionModel()
+                            else:
+                                model_obj = LassoRegressionModel()
+                            
+                            model_obj.load(model_file)
+                            
+                            # Run SHAP analysis
+                            shap_results = shap_analyzer.analyze_linear_model(
+                                model_obj.model,
+                                X,
+                                model_name
+                            )
+                            
+                        elif 'xgboost' in model_name:
+                            # Load XGBoost model
+                            model_obj = XGBoostModel()
+                            model_obj.load(model_file)
+                            
+                            # Run SHAP analysis
+                            shap_results = shap_analyzer.analyze_xgboost(
+                                model_obj.model,
+                                X,
+                                model_name
+                            )
+                        
+                        # Generate report
+                        report_path = Path(f"logs/shap_report_{model_name}_{self.timestamp}.html")
+                        shap_analyzer.generate_report(shap_results, report_path)
+                        
+                        print(f"  ✓ SHAP analysis completed for {model_name}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"SHAP analysis failed for {model_name}: {e}")
+                        print(f"  ✗ SHAP analysis failed for {model_name}: {e}")
+                
+                print("\n✓ SHAP analysis completed")
+                self.logger.info("SHAP analysis completed")
+                
+            except Exception as e:
+                self.logger.error(f"Explainability phase failed: {e}")
+                print(f"\n✗ Explainability failed: {e}")
+    
+    def run_dashboard(self):
+        """
+        Launch the Streamlit dashboard.
+        """
+        with LoggingContext(self.logger, "dashboard_launch"):
+            print("\n[6/6] DASHBOARD")
+            print("-" * 40)
+            
+            self.logger.info("Starting dashboard launch")
+            
+            try:
+                # Check if predictions exist
+                if self.predictions_path is None:
+                    # Find latest predictions
+                    gold_dir = Path("data/gold")
+                    prediction_files = list(gold_dir.glob("predictions_*.parquet"))
+                    if prediction_files:
+                        self.predictions_path = max(prediction_files, key=lambda x: x.stat().st_mtime)
+                
+                if self.predictions_path and self.predictions_path.exists():
+                    print(f"\n✓ Predictions available: {self.predictions_path}")
+                    print(f"✓ Dashboard ready with {pd.read_parquet(self.predictions_path).shape[0]} records")
+                else:
+                    print("\n⚠ No predictions found. Dashboard will use sample data.")
+                
+                print("\n" + "=" * 60)
+                print("DASHBOARD LAUNCH INSTRUCTIONS")
+                print("=" * 60)
+                print("\nTo launch the dashboard, open a NEW terminal and run:")
+                print("\n  streamlit run src/dashboard/app.py")
+                print("\nOr use the quick start script:")
+                print("\n  python quick_start.py")
+                print("\nThe dashboard will open at: http://localhost:8501")
+                print("\n" + "=" * 60)
+                
+                # Offer to launch dashboard automatically
+                launch = input("\nDo you want to launch the dashboard now? (y/n): ")
+                if launch.lower() == 'y':
+                    self._launch_dashboard()
+                
+                self.logger.info("Dashboard instructions displayed")
+                
+            except Exception as e:
+                self.logger.error(f"Dashboard setup failed: {e}")
+                print(f"\n✗ Dashboard setup failed: {e}")
+    
+    def _launch_dashboard(self):
+        """Launch the dashboard in a subprocess."""
+        try:
+            print("\n🚀 Launching dashboard...")
+            
+            # Start dashboard in background
+            import threading
+            
+            def run_streamlit():
+                subprocess.run([
+                    sys.executable, '-m', 'streamlit', 'run',
+                    'src/dashboard/app.py',
+                    '--server.port', '8501',
+                    '--server.address', '0.0.0.0',
+                    '--server.headless', 'true'
+                ])
+            
+            # Start dashboard thread
+            dashboard_thread = threading.Thread(target=run_streamlit, daemon=True)
+            dashboard_thread.start()
+            
+            # Wait for dashboard to start
+            time.sleep(3)
+            
+            # Open browser
+            webbrowser.open('http://localhost:8501')
+            
+            print("✅ Dashboard launched at http://localhost:8501")
+            print("📊 Dashboard is running in the background")
+            print("🛑 Press Ctrl+C in this terminal to stop the pipeline (dashboard will continue)")
+            
+            # Keep the main thread alive
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\n🛑 Pipeline stopped. Dashboard is still running.")
+                print("   To stop the dashboard, close the browser tab and stop the Streamlit process.")
+            
+        except Exception as e:
+            print(f"❌ Failed to launch dashboard: {e}")
+            print("\nYou can still launch it manually with:")
+            print("  streamlit run src/dashboard/app.py")
+    
+    def run_eda(self, df: pd.DataFrame):
+        """
+        Run Exploratory Data Analysis.
+        
+        Args:
+            df: DataFrame for EDA
+        """
+        if df.empty:
+            return
+        
+        with LoggingContext(self.logger, "eda_analysis"):
+            print("\n[+1] EXPLORATORY DATA ANALYSIS")
+            print("-" * 40)
+            
+            self.logger.info("Starting EDA")
+            
+            try:
+                eda = EDAVisualizer()
+                output_dir = Path(f"logs/eda_{self.timestamp}")
+                report_path = eda.create_eda_report(df, output_dir)
+                
+                print(f"✓ EDA report generated: {report_path}")
+                self.logger.info(f"EDA report generated: {report_path}")
+                
+            except Exception as e:
+                self.logger.error(f"EDA failed: {e}")
+                print(f"✗ EDA failed: {e}")
     
     def run_pipeline(self):
         """
-        Execute the complete pipeline from scraping to models.
+        Run the complete pipeline.
         """
-        if self._skip_execution:
-            print("⚠ Pipeline execution skipped (another pipeline is running)")
-            return False
-            
         with LoggingContext(self.logger, "complete_pipeline"):
-            try:
-                self.logger.info("Starting complete pipeline execution")
+            print("\nStarting complete pipeline execution...")
+            
+            # Setup directories
+            self.setup_directories()
+            
+            # Define pipeline steps
+            steps = [
+                ("Scraping", self.run_scraping),
+                ("Cleaning", self.run_cleaning),
+                ("Feature Engineering", self.run_feature_engineering),
+                ("Model Training", self.run_model_training)
+            ]
+            
+            # Execute steps
+            results = {}
+            predictions = None
+            
+            for step_name, step_func in steps:
+                print(f"\nExecuting step: {step_name}")
                 
-                # Execution sequence
-                pipeline_steps = [
-                    ("Scraping", self.run_scraping),
-                    ("Cleaning", self.run_cleaning),
-                    ("Feature Engineering", self.run_feature_engineering),
-                    ("Model Training", self.run_model_training)
-                ]
-                
-                # Execute pipeline steps
-                results = {}
-                predictions_df = None
-                
-                for step_name, step_func in pipeline_steps:
-                    self.logger.info(f"Executing step: {step_name}")
+                if step_name == "Model Training":
+                    predictions = step_func()
+                    results[step_name] = not predictions.empty
                     
-                    if step_name == "Model Training":
-                        # Model training returns predictions DataFrame
-                        predictions_df = step_func()
-                        results[step_name] = not predictions_df.empty
-                    else:
-                        results[step_name] = step_func()
-                
-                # Generate execution summary
-                self._generate_execution_summary(results, predictions_df)
-                
-                return all(results.values())
-                
-            except Exception as e:
-                self.logger.error(f"Pipeline execution failed: {e}", exc_info=True)
-                print(f"✗ Pipeline execution failed: {e}")
-                return False
-            finally:
-                # Always release the lock
-                self.pipeline_lock.release()
+                    if results[step_name] and not predictions.empty:
+                        # Run EDA on predictions
+                        self.run_eda(predictions)
+                        
+                        # Run explainability
+                        self.run_explainability(predictions)
+                else:
+                    results[step_name] = step_func()
+            
+            # Generate summary
+            self._generate_summary(results, predictions)
+            
+            # Offer dashboard launch
+            if any(results.values()):
+                self.run_dashboard()
     
-    def _generate_execution_summary(self, results: dict, predictions_df: pd.DataFrame = None):
-        """
-        Generate and display execution summary.
+    def _generate_summary(self, results: dict, predictions: pd.DataFrame):
+        """Generate execution summary."""
+        print("\n" + "=" * 80)
+        print("PIPELINE EXECUTION SUMMARY")
+        print("=" * 80)
         
-        Args:
-            results: Dictionary of step results
-            predictions_df: Predictions DataFrame if available
-        """
-        # Calculate statistics
+        completed_steps = sum(results.values())
         total_steps = len(results)
-        successful_steps = sum(results.values())
-        success_rate = (successful_steps / total_steps) * 100 if total_steps > 0 else 0
         
-        # Generate summary
-        summary = f"""
-Pipeline Execution Summary
-{"=" * 40}
-
-Steps Completed: {successful_steps}/{total_steps} ({success_rate:.1f}%)
-Execution Timestamp: {self.timestamp}
-
-Step Results:
-"""
+        print(f"\nSteps Completed: {completed_steps}/{total_steps} ({completed_steps/total_steps*100:.1f}%)")
+        print(f"Execution Timestamp: {self.timestamp}")
+        print("\nStep Results:")
         
         for step_name, success in results.items():
             status = "✓ SUCCESS" if success else "✗ FAILED"
-            summary += f"  {step_name:25} {status}\n"
+            print(f"  {step_name:20} {status}")
         
-        # Add model predictions info
-        if predictions_df is not None and not predictions_df.empty:
-            pred_cols = [col for col in predictions_df.columns 
-                       if any(x in col for x in ['prediction', 'regime', 'anomaly'])]
-            summary += f"\nPredictions Generated: {len(predictions_df)} records"
-            summary += f"\nPrediction Features: {len(pred_cols)}"
+        if predictions is not None and not predictions.empty:
+            print(f"\nPredictions Generated: {len(predictions)} records")
+            prediction_cols = [col for col in predictions.columns if any(x in col for x in ['prediction', 'regime', 'anomaly'])]
+            print(f"Prediction Features: {len(prediction_cols)}")
         
-        # Add file locations
-        summary += f"\n\nData Files Generated:"
+        # List generated files
+        print("\nData Files Generated:")
         if self.bronze_path:
-            summary += f"\n  Bronze: {self.bronze_path}"
+            print(f"  Bronze: {self.bronze_path}")
         if self.silver_path:
-            summary += f"\n  Silver: {self.silver_path}"
+            print(f"  Silver: {self.silver_path}")
         if self.gold_path:
-            summary += f"\n  Gold: {self.gold_path}"
+            print(f"  Gold: {self.gold_path}")
+        if self.predictions_path:
+            print(f"  Predictions: {self.predictions_path}")
         
-        summary += f"\n\n{'=' * 40}"
+        print("\n" + "=" * 80)
         
-        print(summary)
+        # Save summary to log file
+        summary_file = Path(f"logs/pipeline_summary_{self.timestamp}.txt")
+        with open(summary_file, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("MARKET NARRATIVE RISK INTELLIGENCE SYSTEM\n")
+            f.write("Pipeline Execution Summary\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Steps Completed: {completed_steps}/{total_steps}\n\n")
+            
+            for step_name, success in results.items():
+                status = "SUCCESS" if success else "FAILED"
+                f.write(f"{step_name}: {status}\n")
         
-        # Save summary to file
-        summary_path = Path(f"logs/pipeline_summary_{self.timestamp}.txt")
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(summary_path, 'w') as f:
-            f.write(summary)
-        
-        self.logger.info(f"Execution summary saved to {summary_path}")
+        self.logger.info(f"Execution summary saved to {summary_file}")
 
 
 def main():
     """
     Main entry point for the pipeline.
     """
-    parser = argparse.ArgumentParser(description="Market Narrative Risk Intelligence System")
+    import argparse
     
-    parser.add_argument("--scrape-only", action="store_true", help="Run only scraping step")
-    parser.add_argument("--clean-only", action="store_true", help="Run only cleaning step")
-    parser.add_argument("--features-only", action="store_true", help="Run only feature engineering")
-    parser.add_argument("--train-only", action="store_true", help="Run only model training")
-    parser.add_argument("--skip-nn", action="store_true", help="Skip neural network to prevent hanging")
+    parser = argparse.ArgumentParser(
+        description="Market Narrative Risk Intelligence System"
+    )
+    
+    parser.add_argument(
+        "--scrape-only",
+        action="store_true",
+        help="Run only scraping step"
+    )
+    
+    parser.add_argument(
+        "--clean-only",
+        action="store_true",
+        help="Run only cleaning step"
+    )
+    
+    parser.add_argument(
+        "--features-only",
+        action="store_true",
+        help="Run only feature engineering"
+    )
+    
+    parser.add_argument(
+        "--train-only",
+        action="store_true",
+        help="Run only model training"
+    )
+    
+    parser.add_argument(
+        "--dashboard-only",
+        action="store_true",
+        help="Launch dashboard only"
+    )
+    
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Run pipeline without launching dashboard"
+    )
     
     args = parser.parse_args()
     
-    # Initialize orchestrator
+    # Initialize logging
+    setup_pipeline_logging()
+    
+    # Create orchestrator
     orchestrator = PipelineOrchestrator()
     
-    # Execute based on arguments
     if args.scrape_only:
         orchestrator.run_scraping()
     elif args.clean_only:
+        orchestrator.bronze_path = max(Path("data/bronze").glob("*.parquet"), 
+                                      key=lambda x: x.stat().st_mtime, default=None)
         orchestrator.run_cleaning()
     elif args.features_only:
+        orchestrator.silver_path = max(Path("data/silver").glob("*.parquet"), 
+                                      key=lambda x: x.stat().st_mtime, default=None)
         orchestrator.run_feature_engineering()
     elif args.train_only:
-        orchestrator.run_model_training()
+        orchestrator.gold_path = max(Path("data/gold").glob("*.parquet"), 
+                                    key=lambda x: x.stat().st_mtime, default=None)
+        predictions = orchestrator.run_model_training()
+        if not predictions.empty:
+            orchestrator.run_explainability(predictions)
+            orchestrator.run_eda(predictions)
+    elif args.dashboard_only:
+        orchestrator.run_dashboard()
     else:
         # Run complete pipeline
-        success = orchestrator.run_pipeline()
-        sys.exit(0 if success else 1)
+        orchestrator.run_pipeline()
 
 
 if __name__ == "__main__":
