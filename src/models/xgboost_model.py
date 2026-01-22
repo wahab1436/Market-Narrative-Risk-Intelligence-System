@@ -1,221 +1,189 @@
 """
 XGBoost model for risk regime classification.
 """
-import pandas as pd
+
+from pathlib import Path
+from typing import Tuple, Dict
+
+import joblib
 import numpy as np
+import pandas as pd
+import xgboost as xgb
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-import xgboost as xgb
-import joblib
-from pathlib import Path
-from typing import Tuple, Dict, Optional
 
-from src.utils.logger import model_logger
 from src.utils.config_loader import config_loader
+from src.utils.logger import model_logger
 
 
 class XGBoostModel:
     """
     XGBoost model for multi-class risk regime classification.
     """
-    
+
     def __init__(self):
-        """Initialize XGBoost model."""
         self.config = config_loader.get_config("config")
         self.model_config = self.config.get("models", {}).get("xgboost", {})
-        self.model = None
+        self.model: xgb.XGBClassifier | None = None
         self.label_encoder = LabelEncoder()
-        self.feature_columns = None
+        self.feature_columns: list[str] | None = None
+
         model_logger.info("XGBoostModel initialized")
-    
+
+    # ------------------------------------------------------------------
+    # LABEL CREATION
+    # ------------------------------------------------------------------
     def create_labels(self, df: pd.DataFrame) -> pd.Series:
-        """
-        Create risk regime labels based on stress scores.
-        
-        Args:
-            df: Input DataFrame
-        
-        Returns:
-            Series with risk regime labels
-        """
-        # Use weighted stress score to create risk regimes
-        stress_scores = df.get('weighted_stress_score', pd.Series(dtype=float))
-        
-        if isinstance(stress_scores, pd.DataFrame):
-            stress_scores = stress_scores.iloc[:, 0]
-        
-        # Create quantile-based thresholds
-        if len(stress_scores) > 0 and stress_scores.notna().any():
-            q_low = stress_scores.quantile(0.33)
-            q_high = stress_scores.quantile(0.67)
-        else:
-            q_low, q_high = -0.5, 0.5
-        
-        # Assign labels
-        labels = pd.Series('medium', index=df.index)
-        labels[stress_scores < q_low] = 'low'
-        labels[stress_scores > q_high] = 'high'
-        
+        """Create quantile-based risk regime labels."""
+        stress = df.get("weighted_stress_score")
+
+        if stress is None or stress.isna().all():
+            model_logger.warning("Missing stress score — defaulting to 'medium'")
+            return pd.Series("medium", index=df.index)
+
+        q_low = stress.quantile(0.33)
+        q_high = stress.quantile(0.67)
+
+        labels = pd.Series("medium", index=df.index)
+        labels.loc[stress < q_low] = "low"
+        labels.loc[stress > q_high] = "high"
+
         return labels
-    
-    def prepare_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-        """
-        Prepare features and target for training.
-        
-        Args:
-            df: Input DataFrame
-        
-        Returns:
-            Tuple of (features, target)
-        """
-        # Select numeric features
+
+    # ------------------------------------------------------------------
+    # DATA PREP
+    # ------------------------------------------------------------------
+    def prepare_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        # Remove target and irrelevant columns
-        exclude_cols = ['weighted_stress_score', 'sentiment_polarity', 'vader_compound']
-        feature_cols = [col for col in numeric_cols if col not in exclude_cols]
-        
-        if not feature_cols:
-            raise ValueError("No valid features found for XGBoost model")
-        
-        self.feature_columns = feature_cols
-        
-        X = df[feature_cols].fillna(0)
+
+        exclude = {
+            "weighted_stress_score",
+            "sentiment_polarity",
+            "vader_compound",
+        }
+
+        self.feature_columns = [c for c in numeric_cols if c not in exclude]
+
+        if not self.feature_columns:
+            raise ValueError("No numeric features available for XGBoost")
+
+        X = df[self.feature_columns].fillna(0)
         y = self.create_labels(df)
-        
-        # Encode labels
+
         y_encoded = self.label_encoder.fit_transform(y)
-        
+
         return X, y_encoded
-    
+
+    # ------------------------------------------------------------------
+    # TRAIN
+    # ------------------------------------------------------------------
     def train(self, df: pd.DataFrame) -> Dict:
-        """
-        Train XGBoost model.
-        
-        Args:
-            df: Training DataFrame
-        
-        Returns:
-            Dictionary with training results
-        """
         model_logger.info("Training XGBoost model")
-        
-        # Prepare data
+
         X, y = self.prepare_data(df)
-        
-        # Split data
+
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y,
         )
-        
-        # Train model
+
         self.model = xgb.XGBClassifier(**self.model_config)
         self.model.fit(X_train, y_train)
-        
-        # Evaluate
+
         y_pred = self.model.predict(X_test)
-        accuracy = accuracy_score(y_test, y_pred)
-        
-        # Classification report
-        y_pred_labels = self.label_encoder.inverse_transform(y_pred)
-        y_test_labels = self.label_encoder.inverse_transform(y_test)
-        
-        class_report = classification_report(
-            y_test_labels,
-            y_pred_labels,
+
+        acc = accuracy_score(y_test, y_pred)
+
+        report = classification_report(
+            self.label_encoder.inverse_transform(y_test),
+            self.label_encoder.inverse_transform(y_pred),
             output_dict=True,
-            zero_division=0
+            zero_division=0,
         )
-        
-        # Feature importance
-        feature_importance = pd.DataFrame({
-            'feature': self.feature_columns,
-            'importance': self.model.feature_importances_
-        }).sort_values('importance', ascending=False)
-        
-        results = {
-            'accuracy': accuracy,
-            'classification_report': class_report,
-            'feature_importance': feature_importance,
-            'model_params': self.model.get_params()
+
+        model_logger.info(f"XGBoost training complete — accuracy={acc:.4f}")
+
+        return {
+            "accuracy": acc,
+            "classification_report": report,
+            "model_params": self.model.get_params(),
+            "feature_importance": pd.DataFrame(
+                {
+                    "feature": self.feature_columns,
+                    "importance": self.model.feature_importances_,
+                }
+            ).sort_values("importance", ascending=False),
         }
-        
-        model_logger.info(f"XGBoost trained: Accuracy={accuracy:.4f}")
-        return results
-    
+
+    # ------------------------------------------------------------------
+    # PREDICT (FULLY FIXED)
+    # ------------------------------------------------------------------
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Make predictions on new data.
-        
-        Args:
-            df: Input DataFrame
-        
-        Returns:
-            DataFrame with predictions
-        """
         if self.model is None or self.feature_columns is None:
-            raise ValueError("Model must be trained before prediction")
-        
-        # Prepare features - ensure we only use rows that have the required features
+            raise RuntimeError("Model must be trained or loaded before prediction")
+
         X = df[self.feature_columns].fillna(0)
-        
-        # **DEBUG: Log shapes**
-        model_logger.info(f"XGBoost predict: X shape = {X.shape}, df shape = {df.shape}")
-        
-        # Make predictions
-        predictions_encoded = self.model.predict(X)
-        predictions = self.label_encoder.inverse_transform(predictions_encoded)
-        
-        # Get prediction probabilities
-        probabilities = self.model.predict_proba(X)
-        
-        # **DEBUG: Log probability shape**
-        model_logger.info(f"XGBoost predict: probabilities shape = {probabilities.shape}")
-        
-        # **FIXED: Create results DataFrame**
+
+        model_logger.info(f"XGBoost predict: X shape = {X.shape}")
+
+        preds_encoded = self.model.predict(X)
+        preds = self.label_encoder.inverse_transform(preds_encoded)
+
+        # --- PROBABILITY FIX (CORE BUG) ---
+        probs = self.model.predict_proba(X)
+        model_logger.info(f"XGBoost raw probs shape = {probs.shape}")
+
+        n_rows = len(X)
+        n_classes = len(self.label_encoder.classes_)
+
+        # Fix transposed / flattened outputs
+        if probs.shape == (n_classes, n_rows):
+            probs = probs.T
+
+        elif probs.ndim == 1:
+            probs = probs.reshape(-1, 1)
+
+        elif probs.shape[0] != n_rows:
+            probs = probs.reshape(n_rows, n_classes)
+
+        if probs.shape != (n_rows, n_classes):
+            raise RuntimeError(
+                f"XGBoost probability shape invalid after fix: {probs.shape}"
+            )
+
+        model_logger.info(f"XGBoost normalized probs shape = {probs.shape}")
+
+        # Build output
         results = df.copy()
-        results['xgboost_risk_regime'] = predictions
-        
-        # **FIXED: Add probability columns with shape validation**
-        all_classes = self.label_encoder.classes_
-        
-        # Verify shapes match
-        if len(probabilities) != len(results):
-            model_logger.error(f"Shape mismatch: probabilities={len(probabilities)}, results={len(results)}")
-            # Fill with NaN if mismatch
-            for class_name in all_classes:
-                results[f'prob_{class_name}'] = np.nan
-        else:
-            # Add probability for each class
-            for i, class_name in enumerate(all_classes):
-                results[f'prob_{class_name}'] = probabilities[:, i]
-        
+        results["xgboost_risk_regime"] = preds
+
+        for i, cls in enumerate(self.label_encoder.classes_):
+            results[f"prob_{cls}"] = probs[:, i]
+
         return results
-    
-    def save(self, filepath: Path):
-        """
-        Save model to disk.
-        
-        Args:
-            filepath: Path to save model
-        """
-        joblib.dump({
-            'model': self.model,
-            'label_encoder': self.label_encoder,
-            'feature_columns': self.feature_columns
-        }, filepath)
-        model_logger.info(f"Model saved to {filepath}")
-    
-    def load(self, filepath: Path):
-        """
-        Load model from disk.
-        
-        Args:
-            filepath: Path to model file
-        """
-        data = joblib.load(filepath)
-        self.model = data['model']
-        self.label_encoder = data['label_encoder']
-        self.feature_columns = data['feature_columns']
-        model_logger.info(f"Model loaded from {filepath}")
+
+    # ------------------------------------------------------------------
+    # SAVE / LOAD
+    # ------------------------------------------------------------------
+    def save(self, path: Path):
+        joblib.dump(
+            {
+                "model": self.model,
+                "label_encoder": self.label_encoder,
+                "feature_columns": self.feature_columns,
+            },
+            path,
+        )
+        model_logger.info(f"XGBoost model saved → {path}")
+
+    def load(self, path: Path):
+        data = joblib.load(path)
+        self.model = data["model"]
+        self.label_encoder = data["label_encoder"]
+        self.feature_columns = data["feature_columns"]
+
+        model_logger.info(f"XGBoost model loaded ← {path}")
