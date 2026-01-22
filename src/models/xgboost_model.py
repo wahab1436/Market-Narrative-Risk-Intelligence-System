@@ -40,10 +40,13 @@ class XGBoostModel:
             Series with risk regime labels
         """
         # Use weighted stress score to create risk regimes
-        stress_scores = df.get('weighted_stress_score', 0)
+        stress_scores = df.get('weighted_stress_score', pd.Series(dtype=float))
+        
+        if isinstance(stress_scores, pd.DataFrame):
+            stress_scores = stress_scores.iloc[:, 0]
         
         # Create quantile-based thresholds
-        if len(stress_scores) > 0:
+        if len(stress_scores) > 0 and stress_scores.notna().any():
             q_low = stress_scores.quantile(0.33)
             q_high = stress_scores.quantile(0.67)
         else:
@@ -72,6 +75,9 @@ class XGBoostModel:
         # Remove target and irrelevant columns
         exclude_cols = ['weighted_stress_score', 'sentiment_polarity', 'vader_compound']
         feature_cols = [col for col in numeric_cols if col not in exclude_cols]
+        
+        if not feature_cols:
+            raise ValueError("No valid features found for XGBoost model")
         
         self.feature_columns = feature_cols
         
@@ -118,7 +124,8 @@ class XGBoostModel:
         class_report = classification_report(
             y_test_labels,
             y_pred_labels,
-            output_dict=True
+            output_dict=True,
+            zero_division=0
         )
         
         # Feature importance
@@ -150,7 +157,7 @@ class XGBoostModel:
         if self.model is None or self.feature_columns is None:
             raise ValueError("Model must be trained before prediction")
         
-        # Prepare features
+        # Prepare features - ensure we only use rows that have the required features
         X = df[self.feature_columns].fillna(0)
         
         # Make predictions
@@ -160,13 +167,22 @@ class XGBoostModel:
         # Get prediction probabilities
         probabilities = self.model.predict_proba(X)
         
-        # Create results DataFrame
+        # **FIX: Create results DataFrame with same index as X**
         results = df.copy()
         results['xgboost_risk_regime'] = predictions
         
-        # Add probability for each class
-        for i, class_name in enumerate(self.label_encoder.classes_):
-            results[f'prob_{class_name}'] = probabilities[:, i]
+        # **FIX: Add probability for each class - ensure proper alignment**
+        # Get all possible classes from the label encoder
+        all_classes = self.label_encoder.classes_
+        
+        # Initialize probability columns with NaN
+        for class_name in all_classes:
+            results[f'prob_{class_name}'] = np.nan
+        
+        # Assign probabilities - now the shapes will match
+        for i, class_name in enumerate(all_classes):
+            # Ensure we're assigning to the correct indices
+            results.loc[X.index, f'prob_{class_name}'] = probabilities[:, i]
         
         return results
     
