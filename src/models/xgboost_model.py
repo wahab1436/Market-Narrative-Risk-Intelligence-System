@@ -167,22 +167,17 @@ class XGBoostModel:
         # Get prediction probabilities
         probabilities = self.model.predict_proba(X)
         
-        # **FIX: Create results DataFrame with same index as X**
+        # **FIXED: Create results DataFrame**
         results = df.copy()
         results['xgboost_risk_regime'] = predictions
         
-        # **FIX: Add probability for each class - ensure proper alignment**
+        # **FIXED: Add probability columns - simple direct assignment**
         # Get all possible classes from the label encoder
         all_classes = self.label_encoder.classes_
         
-        # Initialize probability columns with NaN
-        for class_name in all_classes:
-            results[f'prob_{class_name}'] = np.nan
-        
-        # Assign probabilities - now the shapes will match
+        # Add probability for each class - probabilities and results have same length
         for i, class_name in enumerate(all_classes):
-            # Ensure we're assigning to the correct indices
-            results.loc[X.index, f'prob_{class_name}'] = probabilities[:, i]
+            results[f'prob_{class_name}'] = probabilities[:, i]
         
         return results
     
