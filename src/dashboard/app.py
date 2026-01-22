@@ -295,9 +295,23 @@ class MarketRiskDashboard:
             
             # Date range filter
             if hasattr(self, 'min_date') and hasattr(self, 'max_date'):
+                # **FIX: Handle case where min_date equals max_date**
+                if self.min_date == self.max_date:
+                    # Single date - use it for both start and end
+                    default_start = self.min_date
+                    default_end = self.max_date
+                else:
+                    # Multiple dates - default to last 30 days or available range
+                    date_diff = (self.max_date - self.min_date).days
+                    if date_diff > 30:
+                        default_start = self.max_date - timedelta(days=30)
+                    else:
+                        default_start = self.min_date
+                    default_end = self.max_date
+                
                 date_range = st.date_input(
                     "Analysis Period",
-                    value=(self.max_date - timedelta(days=30), self.max_date),
+                    value=(default_start, default_end),
                     min_value=self.min_date,
                     max_value=self.max_date
                 )
@@ -308,18 +322,6 @@ class MarketRiskDashboard:
                     self.start_date = self.end_date = date_range[0] if date_range else self.max_date
             else:
                 self.start_date = self.end_date = datetime.now().date()
-            
-            # Risk regime filter
-            if 'xgboost_risk_regime' in self.df.columns:
-                risk_regimes = ['All'] + sorted(self.df['xgboost_risk_regime'].dropna().unique().tolist())
-                selected_regime = st.selectbox(
-                    "Risk Regime Filter",
-                    risk_regimes,
-                    index=0
-                )
-                self.selected_regime = selected_regime if selected_regime != 'All' else None
-            else:
-                self.selected_regime = None
             
             # Anomaly filter
             if 'is_anomaly' in self.df.columns:
