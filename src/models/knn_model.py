@@ -117,6 +117,50 @@ class KNNModel:
         model_logger.info(f"KNN trained on {len(X)} samples, avg similarity={avg_similarity:.4f}")
         return results
     
+    def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        **NEW METHOD: Predict similar periods for the input data.**
+        This wraps find_similar_periods() to maintain consistency with other models.
+        
+        Args:
+            df: Input DataFrame
+        
+        Returns:
+            DataFrame with the original data plus similarity information
+        """
+        if self.model is None or self.feature_columns is None:
+            raise ValueError("Model must be trained before prediction")
+        
+        # Find similar periods for the most recent date in the data
+        similar_periods = self.find_similar_periods(df, target_date=None, n_neighbors=5)
+        
+        # Create a results dataframe that includes the original data
+        results = df.copy()
+        
+        # Add similarity information to the results
+        # For each row, we'll add the top similar period's information
+        if len(similar_periods) > 0:
+            # Get the most similar period
+            top_similar = similar_periods.iloc[0] if len(similar_periods) > 0 else None
+            
+            if top_similar is not None:
+                results['most_similar_date'] = str(top_similar.get('date', 'N/A'))
+                results['similarity_score'] = top_similar.get('similarity_score', 0.0)
+                results['days_apart'] = top_similar.get('days_apart', 0)
+                results['top_similarity_features'] = top_similar.get('top_similarity_features', '[]')
+            else:
+                results['most_similar_date'] = 'N/A'
+                results['similarity_score'] = 0.0
+                results['days_apart'] = 0
+                results['top_similarity_features'] = '[]'
+        else:
+            results['most_similar_date'] = 'N/A'
+            results['similarity_score'] = 0.0
+            results['days_apart'] = 0
+            results['top_similarity_features'] = '[]'
+        
+        return results
+    
     def find_similar_periods(self, df: pd.DataFrame, target_date: datetime = None,
                            n_neighbors: int = 5) -> pd.DataFrame:
         """
