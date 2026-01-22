@@ -507,7 +507,7 @@ class MarketRiskDashboard:
         st.markdown("""
         <div style='text-align: center; color: #6c757d; font-size: 0.9em; padding: 20px;'>
         Market Narrative Risk Intelligence System v1.0.0 © 2024<br>
-        ✨ Real-time market analysis powered by machine learning
+        Real-time market analysis powered by machine learning
         </div>
         """, unsafe_allow_html=True)
     
@@ -545,7 +545,7 @@ class MarketRiskDashboard:
             
         except Exception as e:
             self.logger.error(f"Dashboard error: {e}", exc_info=True)
-            st.error(f"⚠️ An error occurred: {str(e)}")
+            st.error(f"An error occurred: {str(e)}")
             with st.expander("Error Details"):
                 st.code(traceback.format_exc())
 
@@ -556,7 +556,7 @@ def main():
         dashboard = MarketRiskDashboard()
         dashboard.run()
     except Exception as e:
-        st.error(f"❌ Failed to initialize dashboard: {e}")
+        st.error(f"Failed to initialize dashboard: {e}")
         st.code(traceback.format_exc())
         st.stop()
 
