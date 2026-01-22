@@ -137,7 +137,7 @@ class IsolationForestModel:
     
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        **NEW METHOD: Predict anomalies in new data.**
+        Predict anomalies in new data.
         This is an alias for detect_anomalies() to maintain consistency with other models.
         
         Args:
