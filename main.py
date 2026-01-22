@@ -1,5 +1,5 @@
 """
-Main pipeline orchestrator - Updated to initialize config before imports.
+Main pipeline orchestrator - Updated to prevent multiple concurrent runs and resource deadlocks.
 """
 import sys
 import argparse
@@ -8,6 +8,10 @@ from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
 import importlib
+import gc
+import os
+import fcntl  # For file locking
+import time
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -34,7 +38,7 @@ for module_name in model_modules:
 
 # Now import everything else
 from src.utils.logger import get_pipeline_logger, setup_pipeline_logging
-from src.scraper import scrape_and_save  # FIXED: Import from module instead of non-existent file
+from src.scraper import scrape_and_save
 from src.preprocessing.clean_data import clean_and_save
 from src.preprocessing.feature_engineering import engineer_and_save
 from src.models.regression.linear_regression import LinearRegressionModel
@@ -57,6 +61,63 @@ def LoggingContext(logger, context_name: str):
         yield
     finally:
         logger.info(f"Completed {context_name}")
+
+
+class PipelineLock:
+    """
+    File-based lock to prevent multiple pipeline instances.
+    """
+    
+    def __init__(self, lock_file: Path = Path("pipeline.lock")):
+        self.lock_file = lock_file
+        self.lock_fd = None
+        
+    def acquire(self, timeout: int = 60) -> bool:
+        """
+        Acquire the pipeline lock.
+        
+        Args:
+            timeout: Maximum time to wait for lock (seconds)
+            
+        Returns:
+            True if lock acquired, False otherwise
+        """
+        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            self.lock_fd = open(self.lock_file, 'w')
+            
+            # Try to acquire lock
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # Write current process info
+                    self.lock_fd.write(f"PID: {os.getpid()}\n")
+                    self.lock_fd.write(f"Time: {datetime.now().isoformat()}\n")
+                    self.lock_fd.flush()
+                    return True
+                except (IOError, BlockingIOError):
+                    time.sleep(1)
+                    continue
+                    
+            # Timeout reached
+            self.lock_fd.close()
+            return False
+            
+        except Exception as e:
+            print(f"Failed to acquire lock: {e}")
+            return False
+    
+    def release(self):
+        """Release the pipeline lock."""
+        if self.lock_fd:
+            try:
+                fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+                self.lock_fd.close()
+                self.lock_file.unlink(missing_ok=True)
+            except:
+                pass
 
 
 class PipelineOrchestrator:
@@ -82,6 +143,9 @@ class PipelineOrchestrator:
         self.run_all = run_all
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Pipeline lock to prevent multiple concurrent runs
+        self.pipeline_lock = PipelineLock()
+        
         # File paths
         self.bronze_path = None
         self.silver_path = None
@@ -90,6 +154,15 @@ class PipelineOrchestrator:
         # Execution metrics
         self.execution_metrics = {}
         
+        # Check if another pipeline is running
+        if not self.pipeline_lock.acquire(timeout=5):
+            self.logger.warning("Another pipeline is already running. Skipping execution.")
+            print("⚠ Another pipeline is already running. Skipping execution.")
+            self._skip_execution = True
+            return
+        else:
+            self._skip_execution = False
+        
         print("=" * 80)
         print("MARKET NARRATIVE RISK INTELLIGENCE SYSTEM")
         print("=" * 80)
@@ -97,6 +170,11 @@ class PipelineOrchestrator:
         
         # Setup directories
         self._setup_directories()
+    
+    def __del__(self):
+        """Cleanup when orchestrator is destroyed."""
+        if hasattr(self, 'pipeline_lock'):
+            self.pipeline_lock.release()
     
     def _setup_directories(self):
         """Create necessary directories for the pipeline."""
@@ -116,6 +194,44 @@ class PipelineOrchestrator:
                 directory.mkdir(parents=True, exist_ok=True)
                 self.logger.debug(f"Ensured directory exists: {directory}")
     
+    def _cleanup_neural_network_resources(self):
+        """
+        CRITICAL FIX: Clean up neural network resources to prevent hanging.
+        This forces TensorFlow/Keras to release GPU/CPU memory.
+        """
+        self.logger.info("Cleaning up neural network resources...")
+        
+        try:
+            # Try to import TensorFlow and clean up
+            import tensorflow as tf
+            from keras import backend as K
+            
+            # Clear Keras session
+            K.clear_session()
+            
+            # Release GPU memory if available
+            if hasattr(tf, 'config') and hasattr(tf.config, 'experimental'):
+                try:
+                    gpus = tf.config.list_physical_devices('GPU')
+                    if gpus:
+                        for gpu in gpus:
+                            tf.config.experimental.set_memory_growth(gpu, True)
+                        self.logger.info("Set GPU memory growth for TensorFlow")
+                except:
+                    pass
+            
+            # Force garbage collection
+            gc.collect()
+            
+        except ImportError:
+            self.logger.warning("TensorFlow/Keras not available for cleanup")
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up neural network resources: {e}")
+        
+        # Force Python garbage collection
+        gc.collect()
+        self.logger.info("Neural network resource cleanup completed")
+    
     def run_scraping(self) -> bool:
         """
         Execute scraping phase to collect news data.
@@ -123,6 +239,9 @@ class PipelineOrchestrator:
         Returns:
             True if successful, False otherwise
         """
+        if self._skip_execution:
+            return False
+            
         with LoggingContext(self.logger, "scraping_phase"):
             try:
                 self.logger.info("Starting scraping phase")
@@ -165,6 +284,9 @@ class PipelineOrchestrator:
         Returns:
             True if successful, False otherwise
         """
+        if self._skip_execution:
+            return False
+            
         with LoggingContext(self.logger, "cleaning_phase"):
             try:
                 self.logger.info("Starting data cleaning phase")
@@ -215,6 +337,9 @@ class PipelineOrchestrator:
         Returns:
             True if successful, False otherwise
         """
+        if self._skip_execution:
+            return False
+            
         with LoggingContext(self.logger, "feature_engineering_phase"):
             try:
                 self.logger.info("Starting feature engineering phase")
@@ -263,6 +388,9 @@ class PipelineOrchestrator:
         Returns:
             DataFrame with all predictions
         """
+        if self._skip_execution:
+            return pd.DataFrame()
+            
         with LoggingContext(self.logger, "model_training_phase"):
             try:
                 self.logger.info("Starting model training phase")
@@ -309,6 +437,10 @@ class PipelineOrchestrator:
                             
                             # Make predictions
                             predictions = model.predict(df)
+                            
+                            # CRITICAL: Force cleanup after neural network to prevent hanging
+                            if model_name == 'neural_network':
+                                self._cleanup_neural_network_resources()
                             
                             # Extract prediction columns
                             pred_cols = [col for col in predictions.columns 
@@ -396,6 +528,10 @@ class PipelineOrchestrator:
         """
         Execute the complete pipeline from scraping to models.
         """
+        if self._skip_execution:
+            print("⚠ Pipeline execution skipped (another pipeline is running)")
+            return False
+            
         with LoggingContext(self.logger, "complete_pipeline"):
             try:
                 self.logger.info("Starting complete pipeline execution")
@@ -431,6 +567,9 @@ class PipelineOrchestrator:
                 self.logger.error(f"Pipeline execution failed: {e}", exc_info=True)
                 print(f"✗ Pipeline execution failed: {e}")
                 return False
+            finally:
+                # Always release the lock
+                self.pipeline_lock.release()
     
     def _generate_execution_summary(self, results: dict, predictions_df: pd.DataFrame = None):
         """
@@ -499,6 +638,7 @@ def main():
     parser.add_argument("--clean-only", action="store_true", help="Run only cleaning step")
     parser.add_argument("--features-only", action="store_true", help="Run only feature engineering")
     parser.add_argument("--train-only", action="store_true", help="Run only model training")
+    parser.add_argument("--skip-nn", action="store_true", help="Skip neural network to prevent hanging")
     
     args = parser.parse_args()
     
