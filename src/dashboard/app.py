@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 try:
     # Import configuration and logging first
     from src.utils.config_loader import config_loader
-    print("✓ Config loader imported successfully")
+    print("Config loader imported successfully")
 except ImportError as e:
     st.error(f"Failed to import config_loader: {e}")
     traceback.print_exc()
@@ -40,7 +40,7 @@ try:
     # Create a simple logger for dashboard initialization
     logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO)
-    print("✓ Logger imported successfully")
+    print("Logger imported successfully")
 except ImportError as e:
     st.error(f"Failed to import logger: {e}")
     traceback.print_exc()
@@ -53,7 +53,7 @@ except ImportError as e:
 try:
     # Try to import EDA visualizer
     from src.eda.visualization import EDAVisualizer
-    print("✓ EDAVisualizer imported successfully")
+    print("EDAVisualizer imported successfully")
 except ImportError as e:
     logger.warning(f"EDAVisualizer not available: {e}")
     EDAVisualizer = None
@@ -63,7 +63,7 @@ try:
     from src.models.regression.linear_regression import LinearRegressionModel
     from src.models.regression.ridge_regression import RidgeRegressionModel
     from src.models.regression.lasso_regression import LassoRegressionModel
-    print("✓ Model imports successful")
+    print("Model imports successful")
 except ImportError as e:
     logger.info(f"Model imports optional, continuing without: {e}")
     LinearRegressionModel = RidgeRegressionModel = LassoRegressionModel = None
@@ -98,7 +98,7 @@ class MarketRiskDashboard:
         try:
             self.config = config_loader.get_dashboard_config()
             self.colors = self.config.get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
-            print("✓ Configuration loaded successfully")
+            print("Configuration loaded successfully")
         except Exception as e:
             logger.warning(f"Failed to load dashboard config: {e}")
             self.config = {}
@@ -393,10 +393,10 @@ class MarketRiskDashboard:
             if 'xgboost_risk_regime' in self.df.columns:
                 current_regime = self.df['xgboost_risk_regime'].iloc[-1] if len(self.df) > 0 else "Unknown"
                 regime_color = {
-                    'low': 'green',
-                    'medium': 'orange',
-                    'high': 'red'
-                }.get(current_regime, 'gray')
+                    'low': '#2ca02c',
+                    'medium': '#ff7f0e',
+                    'high': '#d62728'
+                }.get(current_regime, '#6c757d')
                 
                 st.markdown(f"""
                 <div style='text-align: center;'>
@@ -589,7 +589,7 @@ class MarketRiskDashboard:
                         symbol='diamond',
                         line=dict(width=1, color='white')
                     ),
-                    hovertemplate='<b>Anomaly Detected</b><br>Date: %{x}<br>Score: %{y:.3f}<extra></extra>'
+                    hovertemplate='Anomaly Detected<br>Date: %{x}<br>Score: %{y:.3f}<extra></extra>'
                 ))
         
         # Add anomaly scores if available
@@ -634,7 +634,7 @@ class MarketRiskDashboard:
         models = ['Linear Regression', 'Ridge Regression', 'Lasso Regression', 'Neural Network', 'XGBoost']
         metrics = {
             'MSE': [0.85, 0.82, 0.83, 0.78, 0.76],
-            'R²': [0.72, 0.74, 0.73, 0.78, 0.81],
+            'R2': [0.72, 0.74, 0.73, 0.78, 0.81],
             'MAE': [0.65, 0.63, 0.64, 0.58, 0.55]
         }
         
@@ -782,7 +782,7 @@ class MarketRiskDashboard:
                             'Model': model_name.replace('_', ' ').title(),
                             'MSE': f'{mse:.4f}',
                             'MAE': f'{mae:.4f}',
-                            'R²': f'{r2:.4f}'
+                            'R2': f'{r2:.4f}'
                         })
             
             if performance_data:
@@ -1196,7 +1196,7 @@ class MarketRiskDashboard:
             'Inference Time (ms)': [0.5, 0.6, 0.55, 0.8, 0.7, 2.0, 1.5, 1.2, 1.0],
             'Memory Usage (MB)': [0.1, 0.1, 0.1, 0.2, 0.15, 5.0, 2.0, 0.5, 0.8],
             'MSE': [0.85, 0.82, 0.83, 0.81, 0.79, 0.78, 0.76, 0.84, 0.88],
-            'R²': [0.72, 0.74, 0.73, 0.75, 0.77, 0.78, 0.81, 0.71, 0.68],
+            'R2': [0.72, 0.74, 0.73, 0.75, 0.77, 0.78, 0.81, 0.71, 0.68],
             'Accuracy': [0.78, 0.79, 0.78, 0.80, 0.82, 0.83, 0.85, 0.77, 0.75]
         }
         
@@ -1261,7 +1261,7 @@ class MarketRiskDashboard:
             
             fig.add_trace(go.Scatter(
                 x=complexity_scores,
-                y=performance_metrics['R²'],
+                y=performance_metrics['R2'],
                 mode='markers+text',
                 text=models,
                 textposition="top center",
@@ -1280,7 +1280,7 @@ class MarketRiskDashboard:
                 title='Performance vs Model Complexity Trade-off',
                 height=500,
                 xaxis_title="Model Complexity Score",
-                yaxis_title="R² Score",
+                yaxis_title="R2 Score",
                 showlegend=False
             )
             
