@@ -12,8 +12,18 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from src.utils.logger import scraper_logger
-from src.utils.config_loader import config_loader
+# Safe imports with fallbacks
+try:
+    from src.utils.logger import scraper_logger
+except ImportError:
+    import logging
+    scraper_logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
+
+try:
+    from src.utils.config_loader import config_loader
+except ImportError:
+    config_loader = None
 
 
 class RSSNewsScraper:
@@ -23,8 +33,18 @@ class RSSNewsScraper:
     
     def __init__(self):
         """Initialize RSS scraper with multiple news sources."""
-        self.config = config_loader.get_config("config")
-        self.scraping_config = self.config.get("scraping", {})
+        # Safely get config if available
+        if config_loader:
+            try:
+                self.config = config_loader.get_config("config")
+                self.scraping_config = self.config.get("scraping", {})
+            except Exception as e:
+                scraper_logger.warning(f"Could not load config: {e}. Using defaults.")
+                self.config = {}
+                self.scraping_config = {}
+        else:
+            self.config = {}
+            self.scraping_config = {}
         
         # RSS feed URLs - these are public and won't block
         self.rss_feeds = {
@@ -206,7 +226,7 @@ class RSSNewsScraper:
         """
         if not articles:
             scraper_logger.warning("No articles to save")
-            return
+            return None
         
         df = pd.DataFrame(articles)
         
