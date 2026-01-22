@@ -1,5 +1,6 @@
 """
 Streamlit App - Dashboard with Pipeline Control
+Professional interface for Market Narrative Risk Intelligence System
 """
 import sys
 from pathlib import Path
@@ -37,13 +38,10 @@ def check_data_status():
 def run_pipeline():
     """Run the data pipeline."""
     try:
-        st.info("🔄 Starting pipeline... This may take 2-3 minutes")
-        
-        # Create a placeholder for progress
-        progress_placeholder = st.empty()
+        st.info("Starting pipeline execution... This may take 2-3 minutes")
         
         # Run main.py pipeline
-        with st.spinner("Running pipeline..."):
+        with st.spinner("Executing pipeline..."):
             # Execute main.py
             result = subprocess.run(
                 [sys.executable, "main.py"],
@@ -53,19 +51,19 @@ def run_pipeline():
             )
             
             if result.returncode == 0:
-                st.success("✅ Pipeline completed successfully!")
-                st.info("🔄 Refreshing dashboard with new data...")
+                st.success("Pipeline completed successfully")
+                st.info("Refreshing dashboard with new data...")
                 time.sleep(2)
                 st.rerun()
             else:
-                st.error(f"❌ Pipeline failed with error code {result.returncode}")
+                st.error(f"Pipeline failed with error code {result.returncode}")
                 with st.expander("View Error Details"):
                     st.code(result.stderr)
                 
     except subprocess.TimeoutExpired:
-        st.error("⏱️ Pipeline timeout (>5 minutes). Please check logs.")
+        st.error("Pipeline timeout exceeded 5 minutes. Please check system logs.")
     except Exception as e:
-        st.error(f"❌ Error running pipeline: {e}")
+        st.error(f"Error executing pipeline: {e}")
 
 def main():
     """Main entry point with dashboard and pipeline control."""
@@ -84,28 +82,33 @@ def main():
     # Check data status
     data_file, data_status = check_data_status()
     
-    # Top banner with pipeline control
+    # Professional header
     st.markdown("""
-    <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px; margin-bottom: 20px;'>
-        <h3 style='margin: 0; color: #2c3e50;'>Market Narrative Risk Intelligence System</h3>
+    <div style='background-color: #2c3e50; padding: 20px; border-radius: 5px; margin-bottom: 25px;'>
+        <h2 style='margin: 0; color: #ffffff; font-weight: 400;'>Market Narrative Risk Intelligence System</h2>
+        <p style='margin: 5px 0 0 0; color: #ecf0f1; font-size: 0.95em;'>Real-time market analysis and risk assessment platform</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Control panel
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Control panel with professional styling
+    col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        st.markdown(f"**Data Status:** {data_status}")
+        st.markdown(f"""
+        <div style='padding: 10px; background-color: #f8f9fa; border-radius: 3px; border-left: 3px solid #3498db;'>
+            <strong>System Status:</strong> {data_status}
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        if st.button("🔄 Refresh Data", use_container_width=True, type="primary"):
+        if st.button("Refresh Data", use_container_width=True, type="primary"):
             run_pipeline()
     
     with col3:
-        if st.button("🔃 Reload Dashboard", use_container_width=True):
+        if st.button("Reload Dashboard", use_container_width=True):
             st.rerun()
     
-    st.markdown("---")
+    st.markdown("<div style='margin: 20px 0; border-top: 1px solid #e0e0e0;'></div>", unsafe_allow_html=True)
     
     # Load and run dashboard
     try:
@@ -115,26 +118,37 @@ def main():
         dashboard.run()
         
     except Exception as e:
-        st.error(f"Dashboard error: {e}")
+        st.error(f"Dashboard initialization error: {e}")
         
         # If no data, offer to run pipeline
         if data_file is None:
-            st.warning("⚠️ No data available. The pipeline needs to run first.")
+            st.markdown("""
+            <div style='padding: 20px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 3px; margin: 20px 0;'>
+                <h4 style='margin-top: 0; color: #856404;'>Initial Setup Required</h4>
+                <p style='color: #856404; margin-bottom: 0;'>No data available. The pipeline must be executed to generate initial data.</p>
+            </div>
+            """, unsafe_allow_html=True)
             
             st.markdown("""
-            ### First Time Setup
+            ### Pipeline Execution Steps
             
-            Click the **"Refresh Data"** button above to:
-            1. Scrape latest financial news (2-3 minutes)
-            2. Process and clean the data
-            3. Train machine learning models
-            4. Generate predictions and insights
+            The data pipeline will perform the following operations:
             
-            This only needs to be done once, then you can refresh as needed.
+            1. **Data Acquisition**: Scrape latest financial news from configured RSS sources
+            2. **Data Processing**: Clean and validate scraped articles
+            3. **Feature Engineering**: Extract and compute relevant features
+            4. **Model Training**: Train machine learning models for risk assessment
+            5. **Prediction Generation**: Generate predictions and insights
+            
+            **Estimated Time**: 2-3 minutes
+            
+            This is a one-time setup. Subsequent refreshes will use incremental updates.
             """)
             
-            if st.button("▶️ Run Pipeline Now", type="primary", use_container_width=True):
-                run_pipeline()
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                if st.button("Execute Pipeline", type="primary", use_container_width=True):
+                    run_pipeline()
 
 if __name__ == "__main__":
     main()
