@@ -160,6 +160,9 @@ class XGBoostModel:
         # Prepare features - ensure we only use rows that have the required features
         X = df[self.feature_columns].fillna(0)
         
+        # **DEBUG: Log shapes**
+        model_logger.info(f"XGBoost predict: X shape = {X.shape}, df shape = {df.shape}")
+        
         # Make predictions
         predictions_encoded = self.model.predict(X)
         predictions = self.label_encoder.inverse_transform(predictions_encoded)
@@ -167,17 +170,26 @@ class XGBoostModel:
         # Get prediction probabilities
         probabilities = self.model.predict_proba(X)
         
+        # **DEBUG: Log probability shape**
+        model_logger.info(f"XGBoost predict: probabilities shape = {probabilities.shape}")
+        
         # **FIXED: Create results DataFrame**
         results = df.copy()
         results['xgboost_risk_regime'] = predictions
         
-        # **FIXED: Add probability columns - simple direct assignment**
-        # Get all possible classes from the label encoder
+        # **FIXED: Add probability columns with shape validation**
         all_classes = self.label_encoder.classes_
         
-        # Add probability for each class - probabilities and results have same length
-        for i, class_name in enumerate(all_classes):
-            results[f'prob_{class_name}'] = probabilities[:, i]
+        # Verify shapes match
+        if len(probabilities) != len(results):
+            model_logger.error(f"Shape mismatch: probabilities={len(probabilities)}, results={len(results)}")
+            # Fill with NaN if mismatch
+            for class_name in all_classes:
+                results[f'prob_{class_name}'] = np.nan
+        else:
+            # Add probability for each class
+            for i, class_name in enumerate(all_classes):
+                results[f'prob_{class_name}'] = probabilities[:, i]
         
         return results
     
