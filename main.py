@@ -19,6 +19,10 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 # IMPORTANT: Initialize config_loader FIRST before any other imports
 from src.utils.config_loader import config_loader
 
+# CRITICAL: Import pandas and numpy BEFORE they're used in type hints and methods
+import pandas as pd
+import numpy as np
+
 # **CRITICAL FIX: Force reload of model modules to pick up changes**
 model_modules = [
     'src.models.regression.time_lagged_regression',
@@ -583,7 +587,7 @@ Step Results:
         if self.gold_path:
             summary += f"\n  Gold: {self.gold_path}"
         
-        summary += f"\n\n{'=' * 40}"
+        summary += f"\n\n{'=" * 40}"
         
         print(summary)
         
@@ -627,7 +631,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Add missing imports at the top of main.py
-    import pandas as pd
-    import numpy as np
     main()
