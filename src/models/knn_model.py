@@ -185,15 +185,25 @@ class KNNModel:
         
         if target_date is None:
             # Use the most recent period
-            target_idx = -1
+            target_idx = len(daily_features) - 1
             target_date = daily_features.iloc[-1]['date']
         else:
             # Find index for target date
             target_date = pd.Timestamp(target_date).date()
-            target_idx = daily_features[daily_features['date'] == target_date].index
+            matching_rows = daily_features[daily_features['date'] == target_date].index
+            if len(matching_rows) == 0:
+                model_logger.warning(f"Target date {target_date} not found in data")
+                return pd.DataFrame()
+            target_idx = matching_rows[0]
         
-        if len(target_idx) == 0:
+        # Ensure target_idx is valid
+        if target_idx < 0 or target_idx >= len(X_scaled):
             model_logger.warning(f"Target date {target_date} not found in data")
+            return pd.DataFrame()
+        
+        # Ensure target_idx is valid
+        if target_idx < 0 or target_idx >= len(X_scaled):
+            model_logger.warning(f"Invalid target index {target_idx}")
             return pd.DataFrame()
         
         # Find nearest neighbors
@@ -206,7 +216,7 @@ class KNNModel:
         # Prepare results
         similar_periods = []
         for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
-            if i == 0 and idx == target_idx[0]:
+            if idx == target_idx:
                 continue  # Skip self
             
             period_data = daily_features.iloc[idx].to_dict()
