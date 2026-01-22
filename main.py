@@ -20,7 +20,7 @@ from src.utils.config_loader import config_loader
 
 # Now import everything else
 from src.utils.logger import get_pipeline_logger, setup_pipeline_logging
-from src.scraper.investing_scraper import scrape_and_save
+from src.scraper import scrape_and_save  # FIXED: Import from module instead of non-existent file
 from src.preprocessing.clean_data import clean_and_save
 from src.preprocessing.feature_engineering import engineer_and_save
 from src.models.regression.linear_regression import LinearRegressionModel
@@ -133,7 +133,7 @@ class PipelineOrchestrator:
                         'file_size_mb': Path(self.bronze_path).stat().st_size / 1024 / 1024
                     }
                     
-                    print(f"Scraping completed: {self.bronze_path}")
+                    print(f"✓ Scraping completed: {self.bronze_path}")
                     return True
                 else:
                     self.logger.warning("Scraping completed but no data was collected")
@@ -141,7 +141,7 @@ class PipelineOrchestrator:
                     
             except Exception as e:
                 self.logger.error(f"Scraping failed: {e}", exc_info=True)
-                print(f"Scraping failed: {e}")
+                print(f"✗ Scraping failed: {e}")
                 return False
     
     def run_cleaning(self) -> bool:
@@ -183,7 +183,7 @@ class PipelineOrchestrator:
                         'file_size_mb': Path(self.silver_path).stat().st_size / 1024 / 1024
                     }
                     
-                    print(f"Cleaning completed: {self.silver_path}")
+                    print(f"✓ Cleaning completed: {self.silver_path}")
                     return True
                 else:
                     self.logger.warning("Cleaning completed but no valid data")
@@ -191,7 +191,7 @@ class PipelineOrchestrator:
                     
             except Exception as e:
                 self.logger.error(f"Data cleaning failed: {e}", exc_info=True)
-                print(f"Cleaning failed: {e}")
+                print(f"✗ Cleaning failed: {e}")
                 return False
     
     def run_feature_engineering(self) -> bool:
@@ -231,7 +231,7 @@ class PipelineOrchestrator:
                         'file_size_mb': Path(self.gold_path).stat().st_size / 1024 / 1024
                     }
                     
-                    print(f"Feature engineering completed: {self.gold_path}")
+                    print(f"✓ Feature engineering completed: {self.gold_path}")
                     return True
                 else:
                     self.logger.warning("Feature engineering completed but no features created")
@@ -239,7 +239,7 @@ class PipelineOrchestrator:
                     
             except Exception as e:
                 self.logger.error(f"Feature engineering failed: {e}", exc_info=True)
-                print(f"Feature engineering failed: {e}")
+                print(f"✗ Feature engineering failed: {e}")
                 return False
     
     def run_model_training(self) -> pd.DataFrame:
@@ -361,7 +361,7 @@ class PipelineOrchestrator:
                     }
                     
                     self.logger.info(f"All model predictions saved to: {predictions_path}")
-                    print(f"Model training completed: {predictions_path}")
+                    print(f"✓ Model training completed: {predictions_path}")
                     
                     return final_predictions
                 else:
@@ -375,7 +375,7 @@ class PipelineOrchestrator:
                     
             except Exception as e:
                 self.logger.error(f"Model training phase failed: {e}", exc_info=True)
-                print(f"Model training failed: {e}")
+                print(f"✗ Model training failed: {e}")
                 return pd.DataFrame()
     
     def run_pipeline(self):
@@ -415,7 +415,7 @@ class PipelineOrchestrator:
                 
             except Exception as e:
                 self.logger.error(f"Pipeline execution failed: {e}", exc_info=True)
-                print(f"Pipeline execution failed: {e}")
+                print(f"✗ Pipeline execution failed: {e}")
                 return False
     
     def _generate_execution_summary(self, results: dict, predictions_df: pd.DataFrame = None):
@@ -443,7 +443,7 @@ Step Results:
 """
         
         for step_name, success in results.items():
-            status = "SUCCESS" if success else "FAILED"
+            status = "✓ SUCCESS" if success else "✗ FAILED"
             summary += f"  {step_name:25} {status}\n"
         
         # Add model predictions info
@@ -468,6 +468,7 @@ Step Results:
         
         # Save summary to file
         summary_path = Path(f"logs/pipeline_summary_{self.timestamp}.txt")
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_path, 'w') as f:
             f.write(summary)
         
