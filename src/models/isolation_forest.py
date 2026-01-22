@@ -135,6 +135,19 @@ class IsolationForestModel:
         model_logger.info(f"Isolation Forest trained: {results['n_anomalies_detected']} anomalies detected")
         return results
     
+    def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        **NEW METHOD: Predict anomalies in new data.**
+        This is an alias for detect_anomalies() to maintain consistency with other models.
+        
+        Args:
+            df: Input DataFrame
+        
+        Returns:
+            DataFrame with anomaly predictions and scores
+        """
+        return self.detect_anomalies(df)
+    
     def detect_anomalies(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Detect anomalies in new data.
