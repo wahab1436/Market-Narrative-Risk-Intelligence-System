@@ -30,6 +30,7 @@ class TimeLaggedRegressionModel:
         self.lag_window = lag_window
         self.model = Ridge(alpha=1.0)
         self.feature_columns = None
+        self.model_trained = False  # Track if model was successfully trained
         model_logger.info(f"TimeLaggedRegressionModel initialized (lag_window={lag_window})")
     
     def create_lagged_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -64,6 +65,11 @@ class TimeLaggedRegressionModel:
         except Exception as e:
             model_logger.warning(f"Resampling failed: {e}. Using original data.")
             df_resampled = df_numeric.fillna(0)
+        
+        # Check if we have enough data
+        if len(df_resampled) < self.lag_window + 1:
+            model_logger.warning(f"Insufficient data: {len(df_resampled)} rows < {self.lag_window + 1} required")
+            return pd.DataFrame()
         
         # Create lagged features
         lagged_data = pd.DataFrame(index=df_resampled.index)
@@ -159,6 +165,7 @@ class TimeLaggedRegressionModel:
         
         if len(X) == 0 or len(y) == 0:
             model_logger.error("Insufficient data for training")
+            self.model_trained = False
             return {
                 'error': 'Insufficient data',
                 'mse': 0,
@@ -185,6 +192,7 @@ class TimeLaggedRegressionModel:
         
         # Final training on all data
         self.model.fit(X, y)
+        self.model_trained = True  # Mark as successfully trained
         y_pred = self.model.predict(X)
         
         # Calculate metrics
@@ -230,9 +238,9 @@ class TimeLaggedRegressionModel:
         Returns:
             DataFrame with predictions
         """
-        # Check if model was actually trained (not just initialized)
-        if self.model is None or self.feature_columns is None:
-            model_logger.warning("Model not trained, returning original dataframe")
+        # **FIXED: Check if model was actually trained successfully**
+        if not self.model_trained or self.feature_columns is None:
+            model_logger.warning("Model not trained successfully, returning zeros")
             results = df.copy()
             results['predicted_stress'] = 0
             results['prediction_error'] = 0
@@ -270,7 +278,8 @@ class TimeLaggedRegressionModel:
         joblib.dump({
             'model': self.model,
             'feature_columns': self.feature_columns,
-            'lag_window': self.lag_window
+            'lag_window': self.lag_window,
+            'model_trained': self.model_trained
         }, filepath)
         model_logger.info(f"Model saved to {filepath}")
     
@@ -285,4 +294,5 @@ class TimeLaggedRegressionModel:
         self.model = data['model']
         self.feature_columns = data['feature_columns']
         self.lag_window = data['lag_window']
+        self.model_trained = data.get('model_trained', True)
         model_logger.info(f"Model loaded from {filepath}")
