@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
+import importlib
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -17,6 +18,19 @@ import numpy as np
 
 # IMPORTANT: Initialize config_loader FIRST before any other imports
 from src.utils.config_loader import config_loader
+
+# **CRITICAL FIX: Force reload of model modules to pick up changes**
+# This clears the module cache so updated files are reloaded
+model_modules = [
+    'src.models.regression.time_lagged_regression',
+    'src.models.xgboost_model',
+    'src.models.knn_model',
+    'src.models.isolation_forest'
+]
+
+for module_name in model_modules:
+    if module_name in sys.modules:
+        del sys.modules[module_name]
 
 # Now import everything else
 from src.utils.logger import get_pipeline_logger, setup_pipeline_logging
