@@ -715,7 +715,3 @@ def main():
     Main entry point - handles both backend pipeline and frontend dashboard.
     """
     
-    # Check if running under Streamlit
-    if IS_STREAMLIT:
-        # Running as Streamlit app (frontend)
-        if STREAMLIT_AVAILABLE
