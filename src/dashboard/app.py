@@ -295,9 +295,21 @@ class MarketRiskDashboard:
             
             # Date range filter
             if hasattr(self, 'min_date') and hasattr(self, 'max_date'):
+                # Calculate safe default range
+                date_diff = (self.max_date - self.min_date).days
+                
+                if date_diff > 30:
+                    # If more than 30 days of data, show last 30 days
+                    default_start = self.max_date - timedelta(days=30)
+                    default_end = self.max_date
+                else:
+                    # If less data, show all
+                    default_start = self.min_date
+                    default_end = self.max_date
+                
                 date_range = st.date_input(
                     "Analysis Period",
-                    value=(self.max_date - timedelta(days=30), self.max_date),
+                    value=(default_start, default_end),
                     min_value=self.min_date,
                     max_value=self.max_date
                 )
