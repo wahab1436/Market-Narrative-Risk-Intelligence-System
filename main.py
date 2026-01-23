@@ -1,5 +1,6 @@
 """
-Main pipeline orchestrator - Updated to initialize config before imports.
+Main pipeline orchestrator with integrated dashboard support.
+Can run as pipeline (backend) or Streamlit app (frontend).
 """
 import sys
 import argparse
@@ -33,6 +34,13 @@ from src.models.xgboost_model import XGBoostModel
 from src.models.knn_model import KNNModel
 from src.models.isolation_forest import IsolationForestModel
 from src.explainability.shap_analysis import SHAPAnalyzer
+
+# Import Streamlit components (will only work when running as Streamlit app)
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+except ImportError:
+    STREAMLIT_AVAILABLE = False
 
 
 @contextmanager
@@ -274,7 +282,7 @@ class PipelineOrchestrator:
                     'ridge_regression': RidgeRegressionModel(),
                     'lasso_regression': LassoRegressionModel(),
                     'polynomial_regression': PolynomialRegressionModel(),
-                    'time_lagged_regression': TimeLaggedRegressionModel(),
+                    # 'time_lagged_regression': TimeLaggedRegressionModel(),  # Skip for small datasets
                     'neural_network': NeuralNetworkModel(),
                     'xgboost': XGBoostModel(),
                     'knn': KNNModel(),
@@ -475,18 +483,107 @@ Step Results:
         self.logger.info(f"Execution summary saved to {summary_path}")
 
 
+def run_streamlit_app():
+    """Run the Streamlit dashboard application."""
+    if not STREAMLIT_AVAILABLE:
+        print("Error: Streamlit not available. Install with: pip install streamlit")
+        return
+    
+    # Import dashboard
+    from src.dashboard.app import MarketRiskDashboard
+    
+    # Add pipeline control in sidebar
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 🔧 Pipeline Control")
+        
+        # Check data status
+        gold_dir = Path("data/gold")
+        if gold_dir.exists():
+            files = list(gold_dir.glob("*.parquet"))
+            if files:
+                latest = max(files, key=lambda x: x.stat().st_mtime)
+                mod_time = datetime.fromtimestamp(latest.stat().st_mtime)
+                st.success(f"Data available: {mod_time.strftime('%Y-%m-%d %H:%M')}")
+            else:
+                st.warning("No data files found")
+        else:
+            st.warning("No data directory")
+        
+        # Pipeline buttons
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🔄 Refresh", use_container_width=True):
+                with st.spinner("Running pipeline..."):
+                    try:
+                        orchestrator = PipelineOrchestrator()
+                        success = orchestrator.run_pipeline()
+                        
+                        if success:
+                            st.success("Pipeline completed!")
+                            st.rerun()
+                        else:
+                            st.error("Pipeline failed")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        
+        with col2:
+            if st.button("🔃 Reload", use_container_width=True):
+                st.rerun()
+    
+    # Run dashboard
+    try:
+        dashboard = MarketRiskDashboard()
+        dashboard.run()
+    except Exception as e:
+        st.error(f"Dashboard error: {e}")
+        
+        # Offer to run pipeline if no data
+        if "No data" in str(e) or not Path("data/gold").exists():
+            st.warning("No data available. Run the pipeline first.")
+            if st.button("Run Pipeline Now", type="primary"):
+                with st.spinner("Running pipeline... (2-3 minutes)"):
+                    orchestrator = PipelineOrchestrator()
+                    orchestrator.run_pipeline()
+                    st.rerun()
+
+
 def main():
     """
-    Main entry point for the pipeline.
+    Main entry point - detects if running as Streamlit or CLI.
     """
+    # Check if running under Streamlit
+    try:
+        # Streamlit sets this when running
+        import streamlit.runtime.scriptrunner.script_run_context as script_run_context
+        if script_run_context.get_script_run_ctx() is not None:
+            # Running as Streamlit app
+            run_streamlit_app()
+            return
+    except:
+        pass
+    
+    # Running as CLI (normal Python)
     parser = argparse.ArgumentParser(description="Market Narrative Risk Intelligence System")
     
     parser.add_argument("--scrape-only", action="store_true", help="Run only scraping step")
     parser.add_argument("--clean-only", action="store_true", help="Run only cleaning step")
     parser.add_argument("--features-only", action="store_true", help="Run only feature engineering")
     parser.add_argument("--train-only", action="store_true", help="Run only model training")
+    parser.add_argument("--dashboard", action="store_true", help="Run Streamlit dashboard")
     
     args = parser.parse_args()
+    
+    # Run dashboard if requested
+    if args.dashboard:
+        if STREAMLIT_AVAILABLE:
+            print("Starting Streamlit dashboard...")
+            import subprocess
+            subprocess.run(["streamlit", "run", __file__])
+        else:
+            print("Error: Streamlit not installed. Run: pip install streamlit")
+        return
     
     # Initialize orchestrator
     orchestrator = PipelineOrchestrator()
