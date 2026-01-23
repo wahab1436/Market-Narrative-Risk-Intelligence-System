@@ -1,6 +1,7 @@
 """
 Professional Market Narrative Risk Intelligence Dashboard.
 Modern, clean interface with comprehensive data visualization.
+Complete version with proper pipeline integration.
 """
 import streamlit as st
 import pandas as pd
@@ -14,7 +15,18 @@ import json
 import sys
 import traceback
 from typing import List, Dict, Optional, Tuple
-import signal
+
+# Page configuration - MUST be first Streamlit command
+st.set_page_config(
+    page_title="Market Narrative Risk Intelligence",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': None,
+        'Report a bug': None,
+        'About': "Market Narrative Risk Intelligence System v1.0.0"
+    }
+)
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -24,7 +36,7 @@ try:
     from src.utils.config_loader import config_loader
     print("Config loader imported successfully")
 except ImportError as e:
-    st.error(f"Failed to import config_loader: {e}")
+    print(f"Warning: Failed to import config_loader: {e}")
     config_loader = None
 
 try:
@@ -33,7 +45,7 @@ try:
     logger = get_dashboard_logger()
     print("Logger imported successfully")
 except ImportError as e:
-    st.error(f"Failed to import logger: {e}")
+    print(f"Warning: Failed to import logger: {e}")
     import logging
     logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO)
@@ -45,14 +57,30 @@ except ImportError as e:
     logger.warning(f"EDAVisualizer not available: {e}")
     EDAVisualizer = None
 
+# Import pipeline components
+try:
+    from src.scraper import scrape_and_save
+    from src.preprocessing.clean_data import clean_and_save
+    from src.preprocessing.feature_engineering import engineer_and_save
+    PIPELINE_AVAILABLE = True
+    print("Pipeline components imported successfully")
+except ImportError as e:
+    logger.warning(f"Pipeline components not available: {e}")
+    PIPELINE_AVAILABLE = False
+
+# Import models
 try:
     from src.models.regression.linear_regression import LinearRegressionModel
     from src.models.regression.ridge_regression import RidgeRegressionModel
     from src.models.regression.lasso_regression import LassoRegressionModel
+    from src.models.neural_network import NeuralNetworkModel
+    from src.models.xgboost_model import XGBoostModel
+    from src.models.isolation_forest import IsolationForestModel
+    MODELS_AVAILABLE = True
     print("Model imports successful")
 except ImportError as e:
     logger.info(f"Model imports optional, continuing without: {e}")
-    LinearRegressionModel = RidgeRegressionModel = LassoRegressionModel = None
+    MODELS_AVAILABLE = False
 
 
 class MarketRiskDashboard:
@@ -62,23 +90,12 @@ class MarketRiskDashboard:
     
     def __init__(self):
         """Initialize dashboard with professional settings."""
-        st.set_page_config(
-            page_title="Market Narrative Risk Intelligence",
-            layout="wide",
-            initial_sidebar_state="expanded",
-            menu_items={
-                'Get Help': None,
-                'Report a bug': None,
-                'About': "Market Narrative Risk Intelligence System v1.0.0"
-            }
-        )
-        
         self.logger = logger
         
         try:
             if config_loader:
-                self.config = config_loader.get_dashboard_config()
-                self.colors = self.config.get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+                self.config = config_loader.get_config("config")
+                self.colors = self.config.get('visualization', {}).get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
                 print("Configuration loaded successfully")
             else:
                 self.config = {}
@@ -214,25 +231,157 @@ class MarketRiskDashboard:
         st.session_state.data_loaded = True
         self.logger.info("Created sample data for demonstration")
     
-    def _run_optimized_pipeline(self):
-        """Run the optimized pipeline with progress tracking."""
+    def _run_full_pipeline(self):
+        """Run the complete pipeline: scraping -> cleaning -> features -> models."""
+        if not PIPELINE_AVAILABLE or not MODELS_AVAILABLE:
+            st.error("Pipeline components not available. Please ensure all dependencies are installed.")
+            return False
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        try:
+            status_text.text("Step 1/4: Scraping news articles...")
+            progress_bar.progress(10)
+            self.logger.info("Starting scraping phase")
+            
+            bronze_path = scrape_and_save()
+            
+            if not bronze_path:
+                st.error("Scraping failed. No data collected.")
+                return False
+            
+            self.logger.info(f"Scraping completed: {bronze_path}")
+            progress_bar.progress(25)
+            
+            status_text.text("Step 2/4: Cleaning and validating data...")
+            progress_bar.progress(30)
+            self.logger.info("Starting cleaning phase")
+            
+            silver_path = clean_and_save(bronze_path)
+            
+            if not silver_path:
+                st.error("Data cleaning failed.")
+                return False
+            
+            self.logger.info(f"Cleaning completed: {silver_path}")
+            progress_bar.progress(50)
+            
+            status_text.text("Step 3/4: Engineering features...")
+            progress_bar.progress(55)
+            self.logger.info("Starting feature engineering")
+            
+            gold_path = engineer_and_save(silver_path)
+            
+            if not gold_path:
+                st.error("Feature engineering failed.")
+                return False
+            
+            self.logger.info(f"Feature engineering completed: {gold_path}")
+            progress_bar.progress(70)
+            
+            status_text.text("Step 4/4: Training models and generating predictions...")
+            progress_bar.progress(75)
+            self.logger.info("Starting model training")
+            
+            df = pd.read_parquet(gold_path)
+            
+            models = {
+                'linear_regression': LinearRegressionModel(),
+                'ridge_regression': RidgeRegressionModel(),
+                'lasso_regression': LassoRegressionModel(),
+                'neural_network': NeuralNetworkModel(),
+                'xgboost': XGBoostModel(),
+                'isolation_forest': IsolationForestModel()
+            }
+            
+            predictions_dfs = []
+            model_count = len(models)
+            
+            for idx, (model_name, model) in enumerate(models.items()):
+                try:
+                    status_text.text(f"Training {model_name} ({idx+1}/{model_count})...")
+                    progress = 75 + int((idx / model_count) * 15)
+                    progress_bar.progress(progress)
+                    
+                    self.logger.info(f"Training {model_name}")
+                    
+                    results = model.train(df)
+                    predictions = model.predict(df)
+                    
+                    pred_cols = [col for col in predictions.columns 
+                               if any(x in col for x in ['prediction', 'regime', 'anomaly', 'similarity', 'forecast'])]
+                    
+                    if pred_cols:
+                        predictions_subset = predictions[['timestamp'] + pred_cols]
+                        predictions_dfs.append(predictions_subset)
+                        self.logger.info(f"{model_name} completed successfully")
+                    
+                    model_dir = Path("models")
+                    model_dir.mkdir(exist_ok=True)
+                    model.save(model_dir / f"{model_name}_{timestamp}.joblib")
+                    
+                except Exception as e:
+                    self.logger.error(f"{model_name} training failed: {e}")
+                    continue
+            
+            progress_bar.progress(90)
+            status_text.text("Merging predictions...")
+            
+            if predictions_dfs:
+                final_predictions = df[['timestamp']].copy()
+                
+                for pred_df in predictions_dfs:
+                    final_predictions = final_predictions.merge(
+                        pred_df,
+                        on='timestamp',
+                        how='left'
+                    )
+                
+                feature_cols = [col for col in df.columns if col != 'timestamp']
+                final_predictions = final_predictions.merge(
+                    df[['timestamp'] + feature_cols],
+                    on='timestamp',
+                    how='left'
+                )
+                
+                predictions_path = Path("data/gold") / f"predictions_{timestamp}.parquet"
+                final_predictions.to_parquet(predictions_path, index=False)
+                
+                self.logger.info(f"Predictions saved to: {predictions_path}")
+                
+                progress_bar.progress(100)
+                status_text.text("Pipeline completed successfully!")
+                
+                return True
+            else:
+                st.error("No models produced predictions")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Pipeline failed: {e}", exc_info=True)
+            st.error(f"Pipeline error: {e}")
+            return False
+            
+        finally:
+            progress_bar.empty()
+            status_text.empty()
+    
+    def _run_quick_update(self):
+        """Run quick update using existing data with lightweight models."""
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
-            status_text.text("Initializing pipeline...")
-            progress_bar.progress(10)
-            
-            from sklearn.linear_model import LinearRegression, Ridge
-            
             status_text.text("Loading existing data...")
-            progress_bar.progress(20)
+            progress_bar.progress(10)
             
             df = self.df.copy()
             df = df.tail(500)
             
             status_text.text("Engineering features...")
-            progress_bar.progress(40)
+            progress_bar.progress(30)
             
             if 'sentiment_polarity' in df.columns:
                 df['sentiment_ma_7'] = df['sentiment_polarity'].rolling(7, min_periods=1).mean()
@@ -240,8 +389,10 @@ class MarketRiskDashboard:
             if 'keyword_stress_score' in df.columns:
                 df['stress_ma_7'] = df['keyword_stress_score'].rolling(7, min_periods=1).mean()
             
-            status_text.text("Training models...")
-            progress_bar.progress(60)
+            status_text.text("Training lightweight models...")
+            progress_bar.progress(50)
+            
+            from sklearn.linear_model import LinearRegression, Ridge
             
             feature_cols = [col for col in df.columns if col not in [
                 'timestamp', 'headline', 'weighted_stress_score'
@@ -256,12 +407,14 @@ class MarketRiskDashboard:
             lr_model.fit(X, y)
             predictions['linear_regression_prediction'] = lr_model.predict(X)
             
+            progress_bar.progress(70)
+            
             ridge_model = Ridge(alpha=1.0)
             ridge_model.fit(X, y)
             predictions['ridge_regression_prediction'] = ridge_model.predict(X)
             
-            status_text.text("Generating predictions...")
-            progress_bar.progress(80)
+            status_text.text("Generating risk classifications...")
+            progress_bar.progress(85)
             
             stress_values = predictions.get('weighted_stress_score', y)
             predictions['xgboost_risk_regime'] = pd.cut(
@@ -279,7 +432,7 @@ class MarketRiskDashboard:
             predictions['anomaly_score'] = z_scores
             
             status_text.text("Saving predictions...")
-            progress_bar.progress(90)
+            progress_bar.progress(95)
             
             gold_dir = Path("data/gold")
             gold_dir.mkdir(parents=True, exist_ok=True)
@@ -289,20 +442,17 @@ class MarketRiskDashboard:
             
             predictions.to_parquet(output_file)
             
-            self.load_data()
+            self.logger.info(f"Quick update saved to: {output_file}")
             
             progress_bar.progress(100)
-            status_text.text("Pipeline completed successfully!")
-            st.success("Data updated successfully! Dashboard will refresh in 2 seconds.")
+            status_text.text("Update completed successfully!")
             
-            import time
-            time.sleep(2)
-            st.rerun()
+            return True
                 
         except Exception as e:
-            st.error(f"Pipeline error: {e}")
-            self.logger.error(f"Pipeline failed: {e}", exc_info=True)
-            st.info("Please check logs for details or try again later.")
+            st.error(f"Quick update failed: {e}")
+            self.logger.error(f"Quick update failed: {e}", exc_info=True)
+            return False
             
         finally:
             progress_bar.empty()
@@ -327,18 +477,28 @@ class MarketRiskDashboard:
     def render_sidebar(self):
         """Render professional sidebar with filters and navigation."""
         with st.sidebar:
-            st.markdown("""
+            gold_dir = Path("data/gold")
+            data_status = "No data"
+            data_time = "Never"
+            
+            if gold_dir.exists():
+                files = list(gold_dir.glob("*.parquet"))
+                if files:
+                    latest = max(files, key=lambda x: x.stat().st_mtime)
+                    mod_time = datetime.fromtimestamp(latest.stat().st_mtime)
+                    data_status = "Available"
+                    data_time = mod_time.strftime("%Y-%m-%d %H:%M")
+            
+            st.markdown(f"""
             <div style='padding: 10px; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px;'>
                 <p style='font-size: 0.9em; color: #6c757d; margin: 0;'>
                 <strong>System Status:</strong> Operational<br>
-                <strong>Last Updated:</strong> {date}<br>
-                <strong>Records Loaded:</strong> {records:,}
+                <strong>Data Status:</strong> {data_status}<br>
+                <strong>Last Updated:</strong> {data_time}<br>
+                <strong>Records Loaded:</strong> {len(self.df) if hasattr(self, 'df') else 0:,}
                 </p>
             </div>
-            """.format(
-                date=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                records=len(self.df) if hasattr(self, 'df') else 0
-            ), unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
             
             st.markdown("---")
             st.markdown("### Pipeline Control")
@@ -346,15 +506,37 @@ class MarketRiskDashboard:
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("Update Data", type="primary", use_container_width=True):
-                    self._run_optimized_pipeline()
+                if st.button("Full Update", type="primary", use_container_width=True, help="Run complete pipeline with new data scraping (5-10 min)"):
+                    with st.spinner("Running full pipeline... This may take 5-10 minutes."):
+                        success = self._run_full_pipeline()
+                        if success:
+                            self.load_data()
+                            st.success("Full pipeline completed! Refreshing dashboard...")
+                            import time
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("Pipeline failed. Check logs for details.")
             
             with col2:
-                if st.button("Refresh", use_container_width=True):
-                    st.rerun()
+                if st.button("Quick Update", use_container_width=True, help="Fast update with existing data (1-2 min)"):
+                    with st.spinner("Running quick update..."):
+                        success = self._run_quick_update()
+                        if success:
+                            self.load_data()
+                            st.success("Quick update completed! Refreshing...")
+                            import time
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("Update failed.")
             
-            st.caption("Update Data: Runs lightweight pipeline (2-3 min)")
-            st.caption("Refresh: Reloads existing data")
+            if st.button("Refresh View", use_container_width=True):
+                st.rerun()
+            
+            st.caption("Full Update: Scrapes new data and trains all models")
+            st.caption("Quick Update: Uses existing data with fast models")
+            st.caption("Refresh View: Reloads current data")
             
             st.markdown("---")
             st.markdown("### Navigation")
@@ -552,7 +734,7 @@ class MarketRiskDashboard:
             recent_data = filtered_df[display_cols].tail(10).copy()
             if 'timestamp' in recent_data.columns:
                 recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-            st.dataframe(recent_data, width='stretch', hide_index=True)
+            st.dataframe(recent_data, use_container_width=True, hide_index=True)
         else:
             st.info("No displayable columns available in the data")
     
@@ -809,7 +991,7 @@ class MarketRiskDashboard:
                     pass
             
             if metrics_data:
-                st.dataframe(pd.DataFrame(metrics_data), width='stretch', hide_index=True)
+                st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
         else:
             st.info("Model predictions not yet available. Run the pipeline to train models.")
     
@@ -852,7 +1034,7 @@ class MarketRiskDashboard:
             stats_df = filtered_df[numeric_cols].describe().T
             stats_df = stats_df.round(3)
             
-            st.dataframe(stats_df, width='stretch')
+            st.dataframe(stats_df, use_container_width=True)
         else:
             st.info("Not enough features for analysis")
     
@@ -878,7 +1060,7 @@ class MarketRiskDashboard:
         
         with col2:
             st.markdown("### Data Preview")
-            st.dataframe(filtered_df.head(5), width='stretch')
+            st.dataframe(filtered_df.head(5), use_container_width=True)
         
         st.markdown(f"**Total Records:** {len(filtered_df):,}")
         
@@ -918,7 +1100,7 @@ class MarketRiskDashboard:
         st.markdown("---")
         st.markdown("""
         <div style='text-align: center; color: #6c757d; font-size: 0.9em; padding: 20px;'>
-        Market Narrative Risk Intelligence System v1.0.0 © 2024<br>
+        Market Narrative Risk Intelligence System v1.0.0<br>
         Real-time market analysis powered by machine learning
         </div>
         """, unsafe_allow_html=True)
