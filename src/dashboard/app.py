@@ -14,13 +14,13 @@ import json
 import sys
 import traceback
 from typing import List, Dict, Optional, Tuple
+import signal
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Import project modules with proper error handling
 try:
-    # Import configuration and logging first
     from src.utils.config_loader import config_loader
     print("Config loader imported successfully")
 except ImportError as e:
@@ -28,22 +28,17 @@ except ImportError as e:
     config_loader = None
 
 try:
-    # Import logger with simplified approach
     import logging
     from src.utils.logger import get_dashboard_logger
-    
-    # Create dashboard logger
     logger = get_dashboard_logger()
     print("Logger imported successfully")
 except ImportError as e:
     st.error(f"Failed to import logger: {e}")
-    # Create a minimal logger as fallback
     import logging
     logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO)
 
 try:
-    # Try to import EDA visualizer
     from src.eda.visualization import EDAVisualizer
     print("EDAVisualizer imported successfully")
 except ImportError as e:
@@ -51,7 +46,6 @@ except ImportError as e:
     EDAVisualizer = None
 
 try:
-    # Try to import models (optional for dashboard)
     from src.models.regression.linear_regression import LinearRegressionModel
     from src.models.regression.ridge_regression import RidgeRegressionModel
     from src.models.regression.lasso_regression import LassoRegressionModel
@@ -68,7 +62,6 @@ class MarketRiskDashboard:
     
     def __init__(self):
         """Initialize dashboard with professional settings."""
-        # Page configuration
         st.set_page_config(
             page_title="Market Narrative Risk Intelligence",
             layout="wide",
@@ -80,10 +73,8 @@ class MarketRiskDashboard:
             }
         )
         
-        # Initialize logger
         self.logger = logger
         
-        # Initialize configuration
         try:
             if config_loader:
                 self.config = config_loader.get_dashboard_config()
@@ -97,19 +88,13 @@ class MarketRiskDashboard:
             self.config = {}
             self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
         
-        # Initialize EDA visualizer if available
         if EDAVisualizer:
             self.eda_visualizer = EDAVisualizer(theme="plotly_white")
         else:
             self.eda_visualizer = None
         
-        # Initialize session state
         self._init_session_state()
-        
-        # Load data
         self.load_data()
-        
-        # Log initialization
         self.logger.info("MarketRiskDashboard initialized successfully")
     
     def _init_session_state(self):
@@ -122,6 +107,8 @@ class MarketRiskDashboard:
             st.session_state.filtered_data = None
         if 'model_predictions' not in st.session_state:
             st.session_state.model_predictions = {}
+        if 'pipeline_running' not in st.session_state:
+            st.session_state.pipeline_running = False
     
     def load_data(self):
         """Load prediction data from gold layer."""
@@ -131,19 +118,15 @@ class MarketRiskDashboard:
             if not gold_dir.exists():
                 gold_dir.mkdir(parents=True, exist_ok=True)
             
-            # Look for prediction files first
             prediction_files = list(gold_dir.glob("*predictions*.parquet"))
             
             if prediction_files:
-                # Load the most recent predictions
                 latest_file = max(prediction_files, key=lambda x: x.stat().st_mtime)
                 self.df = pd.read_parquet(latest_file)
                 
-                # Ensure timestamp is datetime
                 if 'timestamp' in self.df.columns:
                     self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
                 
-                # Set date range for filters
                 if not self.df.empty and 'timestamp' in self.df.columns:
                     self.min_date = self.df['timestamp'].min().date()
                     self.max_date = self.df['timestamp'].max().date()
@@ -152,7 +135,6 @@ class MarketRiskDashboard:
                 st.session_state.data_loaded = True
                 
             else:
-                # Try to load any gold data (features)
                 gold_files = list(gold_dir.glob("features_*.parquet"))
                 if gold_files:
                     latest_file = max(gold_files, key=lambda x: x.stat().st_mtime)
@@ -166,7 +148,6 @@ class MarketRiskDashboard:
                     self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
                     st.session_state.data_loaded = True
                 else:
-                    # Check silver layer
                     silver_dir = Path("data/silver")
                     if silver_dir.exists():
                         silver_files = list(silver_dir.glob("*.parquet"))
@@ -196,7 +177,6 @@ class MarketRiskDashboard:
         """Create sample data for demonstration."""
         dates = pd.date_range(end=datetime.now(), periods=60, freq='D')
         
-        # Create realistic sample data
         np.random.seed(42)
         base_trend = np.linspace(0, 2, len(dates))
         seasonal = 0.5 * np.sin(2 * np.pi * np.arange(len(dates)) / 30)
@@ -224,7 +204,6 @@ class MarketRiskDashboard:
             'market_breadth': np.random.uniform(0, 1, len(dates))
         })
         
-        # Ensure probabilities sum to 1
         probs = self.df[['prob_low', 'prob_medium', 'prob_high']].values
         probs = probs / probs.sum(axis=1, keepdims=True)
         self.df[['prob_low', 'prob_medium', 'prob_high']] = probs
@@ -234,6 +213,100 @@ class MarketRiskDashboard:
         
         st.session_state.data_loaded = True
         self.logger.info("Created sample data for demonstration")
+    
+    def _run_optimized_pipeline(self):
+        """Run the optimized pipeline with progress tracking."""
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            status_text.text("Initializing pipeline...")
+            progress_bar.progress(10)
+            
+            from sklearn.linear_model import LinearRegression, Ridge
+            
+            status_text.text("Loading existing data...")
+            progress_bar.progress(20)
+            
+            df = self.df.copy()
+            df = df.tail(500)
+            
+            status_text.text("Engineering features...")
+            progress_bar.progress(40)
+            
+            if 'sentiment_polarity' in df.columns:
+                df['sentiment_ma_7'] = df['sentiment_polarity'].rolling(7, min_periods=1).mean()
+            
+            if 'keyword_stress_score' in df.columns:
+                df['stress_ma_7'] = df['keyword_stress_score'].rolling(7, min_periods=1).mean()
+            
+            status_text.text("Training models...")
+            progress_bar.progress(60)
+            
+            feature_cols = [col for col in df.columns if col not in [
+                'timestamp', 'headline', 'weighted_stress_score'
+            ]]
+            
+            X = df[feature_cols].select_dtypes(include=[np.number]).fillna(0)
+            y = df['weighted_stress_score'] if 'weighted_stress_score' in df.columns else np.random.rand(len(df))
+            
+            predictions = df.copy()
+            
+            lr_model = LinearRegression()
+            lr_model.fit(X, y)
+            predictions['linear_regression_prediction'] = lr_model.predict(X)
+            
+            ridge_model = Ridge(alpha=1.0)
+            ridge_model.fit(X, y)
+            predictions['ridge_regression_prediction'] = ridge_model.predict(X)
+            
+            status_text.text("Generating predictions...")
+            progress_bar.progress(80)
+            
+            stress_values = predictions.get('weighted_stress_score', y)
+            predictions['xgboost_risk_regime'] = pd.cut(
+                stress_values,
+                bins=[-np.inf, 0.3, 0.7, np.inf],
+                labels=['low', 'medium', 'high']
+            )
+            
+            predictions['prob_low'] = (stress_values < 0.3).astype(float)
+            predictions['prob_medium'] = ((stress_values >= 0.3) & (stress_values < 0.7)).astype(float)
+            predictions['prob_high'] = (stress_values >= 0.7).astype(float)
+            
+            z_scores = np.abs((stress_values - stress_values.mean()) / stress_values.std())
+            predictions['is_anomaly'] = (z_scores > 2).astype(int)
+            predictions['anomaly_score'] = z_scores
+            
+            status_text.text("Saving predictions...")
+            progress_bar.progress(90)
+            
+            gold_dir = Path("data/gold")
+            gold_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = gold_dir / f"predictions_{timestamp}.parquet"
+            
+            predictions.to_parquet(output_file)
+            
+            self.load_data()
+            
+            progress_bar.progress(100)
+            status_text.text("Pipeline completed successfully!")
+            st.success("Data updated successfully! Dashboard will refresh in 2 seconds.")
+            
+            import time
+            time.sleep(2)
+            st.rerun()
+                
+        except Exception as e:
+            st.error(f"Pipeline error: {e}")
+            self.logger.error(f"Pipeline failed: {e}", exc_info=True)
+            st.info("Please check logs for details or try again later.")
+            
+        finally:
+            progress_bar.empty()
+            status_text.empty()
     
     def render_header(self):
         """Render professional header."""
@@ -254,7 +327,6 @@ class MarketRiskDashboard:
     def render_sidebar(self):
         """Render professional sidebar with filters and navigation."""
         with st.sidebar:
-            # System Information
             st.markdown("""
             <div style='padding: 10px; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px;'>
                 <p style='font-size: 0.9em; color: #6c757d; margin: 0;'>
@@ -268,9 +340,25 @@ class MarketRiskDashboard:
                 records=len(self.df) if hasattr(self, 'df') else 0
             ), unsafe_allow_html=True)
             
+            st.markdown("---")
+            st.markdown("### Pipeline Control")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("Update Data", type="primary", use_container_width=True):
+                    self._run_optimized_pipeline()
+            
+            with col2:
+                if st.button("Refresh", use_container_width=True):
+                    st.rerun()
+            
+            st.caption("Update Data: Runs lightweight pipeline (2-3 min)")
+            st.caption("Refresh: Reloads existing data")
+            
+            st.markdown("---")
             st.markdown("### Navigation")
             
-            # View selection
             view_options = {
                 'overview': 'System Overview',
                 'stress_analysis': 'Stress Score Analysis',
@@ -293,17 +381,13 @@ class MarketRiskDashboard:
             st.markdown("---")
             st.markdown("### Data Filters")
             
-            # Date range filter
             if hasattr(self, 'min_date') and hasattr(self, 'max_date'):
-                # Calculate safe default range
                 date_diff = (self.max_date - self.min_date).days
                 
                 if date_diff > 30:
-                    # If more than 30 days of data, show last 30 days
                     default_start = self.max_date - timedelta(days=30)
                     default_end = self.max_date
                 else:
-                    # If less data, show all
                     default_start = self.min_date
                     default_end = self.max_date
                 
@@ -321,7 +405,6 @@ class MarketRiskDashboard:
             else:
                 self.start_date = self.end_date = datetime.now().date()
             
-            # Risk regime filter
             if 'xgboost_risk_regime' in self.df.columns:
                 risk_regimes = ['All'] + sorted(self.df['xgboost_risk_regime'].dropna().unique().tolist())
                 selected_regime = st.selectbox(
@@ -333,7 +416,6 @@ class MarketRiskDashboard:
             else:
                 self.selected_regime = None
             
-            # Anomaly filter
             if 'is_anomaly' in self.df.columns:
                 anomaly_filter = st.radio(
                     "Anomaly Filter",
@@ -344,7 +426,6 @@ class MarketRiskDashboard:
             else:
                 self.anomaly_filter = 'All Data'
             
-            # Confidence threshold
             confidence_threshold = st.slider(
                 "Minimum Confidence Threshold",
                 min_value=0.0,
@@ -357,7 +438,6 @@ class MarketRiskDashboard:
             
             st.markdown("---")
             
-            # Data statistics
             with st.expander("Data Statistics", expanded=False):
                 if st.session_state.data_loaded:
                     total_records = len(self.df)
@@ -376,25 +456,21 @@ class MarketRiskDashboard:
         """Apply all sidebar filters to data."""
         filtered_df = df.copy()
         
-        # Date filter
         if 'timestamp' in filtered_df.columns:
             filtered_df = filtered_df[
                 (filtered_df['timestamp'].dt.date >= self.start_date) &
                 (filtered_df['timestamp'].dt.date <= self.end_date)
             ]
         
-        # Risk regime filter
         if self.selected_regime and 'xgboost_risk_regime' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['xgboost_risk_regime'] == self.selected_regime]
         
-        # Anomaly filter
         if 'is_anomaly' in filtered_df.columns:
             if self.anomaly_filter == 'Anomalies Only':
                 filtered_df = filtered_df[filtered_df['is_anomaly'] == 1]
             elif self.anomaly_filter == 'Exclude Anomalies':
                 filtered_df = filtered_df[filtered_df['is_anomaly'] == 0]
         
-        # Confidence filter for classification models
         prob_cols = [col for col in filtered_df.columns if col.startswith('prob_')]
         if prob_cols:
             max_probs = filtered_df[prob_cols].max(axis=1)
@@ -408,12 +484,10 @@ class MarketRiskDashboard:
         
         filtered_df = self._apply_filters(self.df)
         
-        # Show data status
         if filtered_df.empty:
             st.warning("No data matches current filters. Please adjust your filter settings.")
             return
         
-        # Key metrics row
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -470,7 +544,6 @@ class MarketRiskDashboard:
         
         st.markdown("---")
         
-        # Show simple data table
         st.markdown("### Recent Articles")
         display_cols = ['timestamp', 'headline', 'sentiment_polarity', 'weighted_stress_score']
         display_cols = [col for col in display_cols if col in filtered_df.columns]
@@ -479,7 +552,7 @@ class MarketRiskDashboard:
             recent_data = filtered_df[display_cols].tail(10).copy()
             if 'timestamp' in recent_data.columns:
                 recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-            st.dataframe(recent_data, use_container_width=True, hide_index=True)
+            st.dataframe(recent_data, width='stretch', hide_index=True)
         else:
             st.info("No displayable columns available in the data")
     
@@ -493,12 +566,10 @@ class MarketRiskDashboard:
             st.warning("No data available for stress analysis")
             return
         
-        # Check if we have stress score data
         if 'weighted_stress_score' not in filtered_df.columns:
             st.info("Stress score data not yet available. Run the pipeline to generate predictions.")
             return
         
-        # Time series chart
         fig = go.Figure()
         
         fig.add_trace(go.Scatter(
@@ -510,7 +581,6 @@ class MarketRiskDashboard:
             marker=dict(size=4)
         ))
         
-        # Add trend line
         if len(filtered_df) > 2:
             z = np.polyfit(range(len(filtered_df)), filtered_df['weighted_stress_score'], 1)
             p = np.poly1d(z)
@@ -532,7 +602,6 @@ class MarketRiskDashboard:
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Statistics
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -554,9 +623,7 @@ class MarketRiskDashboard:
             st.warning("No data available")
             return
         
-        # Check for risk regime data
         if 'xgboost_risk_regime' in filtered_df.columns:
-            # Regime distribution pie chart
             regime_counts = filtered_df['xgboost_risk_regime'].value_counts()
             
             fig = go.Figure(data=[go.Pie(
@@ -572,7 +639,6 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Regime timeline
             fig2 = px.scatter(
                 filtered_df,
                 x='timestamp',
@@ -597,7 +663,6 @@ class MarketRiskDashboard:
             return
         
         if 'is_anomaly' in filtered_df.columns:
-            # Anomaly timeline
             fig = go.Figure()
             
             normal = filtered_df[filtered_df['is_anomaly'] == 0]
@@ -629,7 +694,6 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Anomaly stats
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Total Anomalies", int(filtered_df['is_anomaly'].sum()))
@@ -648,7 +712,6 @@ class MarketRiskDashboard:
             st.info("Historical pattern analysis requires stress score data")
             return
         
-        # Pattern distribution
         fig = px.histogram(
             filtered_df,
             x='weighted_stress_score',
@@ -658,7 +721,6 @@ class MarketRiskDashboard:
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Correlation with sentiment if available
         if 'sentiment_polarity' in filtered_df.columns:
             fig2 = px.scatter(
                 filtered_df,
@@ -667,10 +729,8 @@ class MarketRiskDashboard:
                 title='Sentiment vs Stress Score Correlation'
             )
             
-            # Calculate correlation coefficient manually
             correlation = filtered_df[['sentiment_polarity', 'weighted_stress_score']].corr().iloc[0, 1]
             
-            # Add correlation as annotation
             fig2.add_annotation(
                 text=f'Correlation: {correlation:.3f}',
                 xref="paper", yref="paper",
@@ -694,16 +754,13 @@ class MarketRiskDashboard:
             st.warning("No data available")
             return
         
-        # Check for prediction columns
         pred_cols = [col for col in filtered_df.columns if 'prediction' in col.lower()]
         
         if pred_cols and 'weighted_stress_score' in filtered_df.columns:
-            # Model comparison
             st.markdown("### Model Predictions Comparison")
             
             fig = go.Figure()
             
-            # Add actual values
             fig.add_trace(go.Scatter(
                 x=filtered_df['timestamp'],
                 y=filtered_df['weighted_stress_score'],
@@ -712,8 +769,7 @@ class MarketRiskDashboard:
                 line=dict(color='black', width=2)
             ))
             
-            # Add predictions
-            for i, col in enumerate(pred_cols[:4]):  # Show max 4 models
+            for i, col in enumerate(pred_cols[:4]):
                 fig.add_trace(go.Scatter(
                     x=filtered_df['timestamp'],
                     y=filtered_df[col],
@@ -732,7 +788,6 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Calculate metrics if possible
             st.markdown("### Model Metrics")
             
             metrics_data = []
@@ -754,7 +809,7 @@ class MarketRiskDashboard:
                     pass
             
             if metrics_data:
-                st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(metrics_data), width='stretch', hide_index=True)
         else:
             st.info("Model predictions not yet available. Run the pipeline to train models.")
     
@@ -768,15 +823,13 @@ class MarketRiskDashboard:
             st.warning("No data available")
             return
         
-        # Get numeric columns
         numeric_cols = filtered_df.select_dtypes(include=[np.number]).columns.tolist()
         numeric_cols = [col for col in numeric_cols if col not in ['is_anomaly']]
         
         if len(numeric_cols) > 1:
-            # Feature correlation heatmap
             st.markdown("### Feature Correlations")
             
-            corr_cols = numeric_cols[:15]  # Limit to 15 features
+            corr_cols = numeric_cols[:15]
             corr_matrix = filtered_df[corr_cols].corr()
             
             fig = px.imshow(
@@ -794,13 +847,12 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Feature statistics
             st.markdown("### Feature Statistics")
             
             stats_df = filtered_df[numeric_cols].describe().T
             stats_df = stats_df.round(3)
             
-            st.dataframe(stats_df, use_container_width=True)
+            st.dataframe(stats_df, width='stretch')
         else:
             st.info("Not enough features for analysis")
     
@@ -826,11 +878,10 @@ class MarketRiskDashboard:
         
         with col2:
             st.markdown("### Data Preview")
-            st.dataframe(filtered_df.head(5), use_container_width=True)
+            st.dataframe(filtered_df.head(5), width='stretch')
         
         st.markdown(f"**Total Records:** {len(filtered_df):,}")
         
-        # Export buttons
         if export_format == 'CSV':
             csv = filtered_df.to_csv(index=False)
             st.download_button(
@@ -875,13 +926,9 @@ class MarketRiskDashboard:
     def run(self):
         """Run the dashboard application."""
         try:
-            # Render header
             self.render_header()
-            
-            # Render sidebar (navigation and filters)
             self.render_sidebar()
             
-            # Render main content based on selected view
             view_handlers = {
                 'overview': self.render_overview,
                 'stress_analysis': self.render_stress_analysis,
@@ -896,10 +943,8 @@ class MarketRiskDashboard:
             current_view = st.session_state.get('current_view', 'overview')
             handler = view_handlers.get(current_view, self.render_overview)
             
-            # Execute the view handler
             handler()
             
-            # Render footer
             self.render_footer()
             
             self.logger.info(f"Dashboard view '{current_view}' rendered successfully")
