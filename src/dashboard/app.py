@@ -233,9 +233,24 @@ class MarketRiskDashboard:
     
     def _run_full_pipeline(self):
         """Run the complete pipeline: scraping -> cleaning -> features -> models."""
-        if not PIPELINE_AVAILABLE or not MODELS_AVAILABLE:
-            st.error("Pipeline components not available. Please ensure all dependencies are installed.")
+        if not PIPELINE_AVAILABLE:
+            st.error("Pipeline components not available. Cannot run full pipeline.")
+            st.info("Pipeline components missing. Try 'Quick Update' instead, which uses existing data.")
+            with st.expander("Why is this happening?"):
+                st.write("""
+                The full pipeline requires:
+                - src.scraper (for data collection)
+                - src.preprocessing.clean_data
+                - src.preprocessing.feature_engineering
+                
+                These modules may not be deployed or have import errors.
+                Use 'Quick Update' button instead to update predictions with existing data.
+                """)
             return False
+        
+        if not MODELS_AVAILABLE:
+            st.warning("Some model imports failed. Pipeline will use available models only.")
+            # Continue anyway with available models
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -369,13 +384,18 @@ class MarketRiskDashboard:
             status_text.empty()
     
     def _run_quick_update(self):
-        """Run quick update using existing data with lightweight models."""
+        """Run quick update using existing data with lightweight models - NO pipeline dependencies needed."""
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
             status_text.text("Loading existing data...")
             progress_bar.progress(10)
+            
+            # Check if we have any data
+            if not hasattr(self, 'df') or self.df is None or self.df.empty:
+                st.error("No data available. Please ensure data files exist in data/gold/, data/silver/, or data/bronze/")
+                return False
             
             df = self.df.copy()
             df = df.tail(500)
@@ -503,10 +523,24 @@ class MarketRiskDashboard:
             st.markdown("---")
             st.markdown("### Pipeline Control")
             
+            # Show pipeline status
+            if PIPELINE_AVAILABLE:
+                st.success("Pipeline: Available")
+            else:
+                st.warning("Pipeline: Not Available")
+            
+            if MODELS_AVAILABLE:
+                st.success("Models: Available")
+            else:
+                st.warning("Models: Limited")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("Full Update", type="primary", use_container_width=True, help="Run complete pipeline with new data scraping (5-10 min)"):
+                full_disabled = not PIPELINE_AVAILABLE
+                if st.button("Full Update", type="primary", use_container_width=True, 
+                           disabled=full_disabled,
+                           help="Run complete pipeline with new data scraping (5-10 min)" if not full_disabled else "Pipeline components not available"):
                     with st.spinner("Running full pipeline... This may take 5-10 minutes."):
                         success = self._run_full_pipeline()
                         if success:
@@ -519,7 +553,7 @@ class MarketRiskDashboard:
                             st.error("Pipeline failed. Check logs for details.")
             
             with col2:
-                if st.button("Quick Update", use_container_width=True, help="Fast update with existing data (1-2 min)"):
+                if st.button("Quick Update", use_container_width=True, help="Fast update with existing data (1-2 min) - Always available"):
                     with st.spinner("Running quick update..."):
                         success = self._run_quick_update()
                         if success:
@@ -534,8 +568,8 @@ class MarketRiskDashboard:
             if st.button("Refresh View", use_container_width=True):
                 st.rerun()
             
-            st.caption("Full Update: Scrapes new data and trains all models")
-            st.caption("Quick Update: Uses existing data with fast models")
+            st.caption("Full Update: Scrapes new data (requires pipeline)")
+            st.caption("Quick Update: Uses existing data (always works)")
             st.caption("Refresh View: Reloads current data")
             
             st.markdown("---")
