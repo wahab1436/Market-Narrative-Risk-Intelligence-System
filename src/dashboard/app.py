@@ -734,7 +734,7 @@ class MarketRiskDashboard:
             recent_data = filtered_df[display_cols].tail(10).copy()
             if 'timestamp' in recent_data.columns:
                 recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-            st.dataframe(recent_data, use_container_width=True, hide_index=True)
+            st.dataframe(recent_data, width='stretch', hide_index=True)
         else:
             st.info("No displayable columns available in the data")
     
@@ -819,7 +819,7 @@ class MarketRiskDashboard:
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             fig2 = px.scatter(
                 filtered_df,
@@ -991,7 +991,7 @@ class MarketRiskDashboard:
                     pass
             
             if metrics_data:
-                st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(metrics_data), width='stretch', hide_index=True)
         else:
             st.info("Model predictions not yet available. Run the pipeline to train models.")
     
@@ -1034,7 +1034,7 @@ class MarketRiskDashboard:
             stats_df = filtered_df[numeric_cols].describe().T
             stats_df = stats_df.round(3)
             
-            st.dataframe(stats_df, use_container_width=True)
+            st.dataframe(stats_df, width='stretch')
         else:
             st.info("Not enough features for analysis")
     
@@ -1060,7 +1060,7 @@ class MarketRiskDashboard:
         
         with col2:
             st.markdown("### Data Preview")
-            st.dataframe(filtered_df.head(5), use_container_width=True)
+            st.dataframe(filtered_df.head(5), width='stretch')
         
         st.markdown(f"**Total Records:** {len(filtered_df):,}")
         
