@@ -1,5 +1,6 @@
 """
 Feature engineering module for market narrative analysis.
+FIXED: Added proper target variable creation for regression models
 """
 import pandas as pd
 import numpy as np
@@ -11,7 +12,6 @@ from textblob import TextBlob
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 
-# Download required NLTK data
 try:
     nltk.data.find('sentiment/vader_lexicon')
 except LookupError:
@@ -142,6 +142,9 @@ class FeatureEngineer:
         # Ensure timestamp is datetime
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
+        # Sort by timestamp
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        
         # Set timestamp as index for resampling
         df_indexed = df.set_index('timestamp')
         
@@ -149,7 +152,7 @@ class FeatureEngineer:
         daily_counts = df_indexed.resample('D').size()
         daily_counts.name = 'daily_article_count'
         
-        # Create feature DataFrame
+        # Create feature DataFrame with complete date range
         feature_df = pd.DataFrame(index=pd.date_range(
             start=df['timestamp'].min(),
             end=df['timestamp'].max(),
@@ -161,12 +164,15 @@ class FeatureEngineer:
         feature_df['daily_article_count'] = feature_df['daily_article_count'].fillna(0)
         
         # Rolling statistics
-        feature_df['rolling_7d_mean'] = feature_df['daily_article_count'].rolling(7).mean()
-        feature_df['rolling_7d_volatility'] = feature_df['daily_article_count'].rolling(7).std()
+        feature_df['rolling_7d_mean'] = feature_df['daily_article_count'].rolling(7, min_periods=1).mean()
+        feature_df['rolling_7d_volatility'] = feature_df['daily_article_count'].rolling(7, min_periods=1).std()
         
         # Lag features
         for lag in [1, 3, 7]:
             feature_df[f'lag_{lag}d'] = feature_df['daily_article_count'].shift(lag)
+        
+        # Fill NaN in lag features
+        feature_df = feature_df.fillna(0)
         
         # Day of week features
         feature_df['day_of_week'] = feature_df.index.dayofweek
@@ -196,18 +202,27 @@ class FeatureEngineer:
         # Weighted stress score
         weights = self.feature_config.get('weights', {})
         
-        # Normalize features
+        # Normalize features with better handling of edge cases
         for col in ['sentiment_polarity', 'keyword_stress_score', 'daily_article_count']:
             if col in df.columns:
-                df[f'{col}_norm'] = (df[col] - df[col].mean()) / df[col].std()
+                col_std = df[col].std()
+                if col_std > 0:
+                    df[f'{col}_norm'] = (df[col] - df[col].mean()) / col_std
+                else:
+                    df[f'{col}_norm'] = 0
         
         # Calculate weighted stress score
         if all(f'{col}_norm' in df.columns for col in ['sentiment_polarity', 'keyword_stress_score']):
+            # Calculate recency score
+            days_old = (datetime.now() - df['timestamp']).dt.days
+            max_days = days_old.max() if days_old.max() > 0 else 1
+            recency_score = 1 - (days_old / max_days)
+            
             df['weighted_stress_score'] = (
                 weights.get('sentiment', 0.3) * df['sentiment_polarity_norm'] +
                 weights.get('keyword_stress', 0.4) * df['keyword_stress_score_norm'] +
                 weights.get('volume', 0.2) * df.get('daily_article_count_norm', 0) +
-                weights.get('recency', 0.1) * (1 - (datetime.now() - df['timestamp']).dt.days / 30)
+                weights.get('recency', 0.1) * recency_score
             )
         
         # Market breadth indicator
@@ -217,9 +232,47 @@ class FeatureEngineer:
         
         # Sentiment volatility
         if 'sentiment_polarity' in df.columns:
-            df['sentiment_volatility_7d'] = df['sentiment_polarity'].rolling(7).std()
+            df['sentiment_volatility_7d'] = df['sentiment_polarity'].rolling(7, min_periods=1).std()
         
         preprocessing_logger.info("Created composite features")
+        return df
+    
+    def create_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        **FIX: Create proper target variable for regression models**
+        
+        The target should be a FUTURE value we want to predict.
+        Here we create a 'future_stress' target that represents
+        the stress score 1 day ahead.
+        
+        Args:
+            df: Input DataFrame
+        
+        Returns:
+            DataFrame with target variable
+        """
+        df = df.copy()
+        
+        # Sort by timestamp to ensure proper ordering
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        
+        # Create target: Next day's weighted stress score
+        if 'weighted_stress_score' in df.columns:
+            # Shift the stress score backward (so current row has next day's value)
+            df['target_stress_next_day'] = df['weighted_stress_score'].shift(-1)
+            
+            # For the last row, use current value (no future data available)
+            df['target_stress_next_day'].fillna(df['weighted_stress_score'], inplace=True)
+            
+            preprocessing_logger.info("Created target variable: target_stress_next_day")
+        else:
+            preprocessing_logger.warning("Cannot create target: weighted_stress_score not found")
+            # Create a dummy target based on sentiment
+            if 'sentiment_polarity' in df.columns:
+                df['target_stress_next_day'] = df['sentiment_polarity'].abs()
+            else:
+                df['target_stress_next_day'] = 0
+        
         return df
     
     def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -239,11 +292,18 @@ class FeatureEngineer:
         df = self.extract_temporal_features(df)
         df = self.create_composite_features(df)
         
+        # **FIX: Create target variable for supervised learning**
+        df = self.create_target_variable(df)
+        
         # Drop intermediate columns
         drop_cols = [col for col in df.columns if col.endswith('_norm')]
         df = df.drop(columns=drop_cols, errors='ignore')
         
-        preprocessing_logger.info(f"Final feature set: {len(df.columns)} columns")
+        # Log feature summary
+        feature_cols = [col for col in df.columns if col not in ['timestamp', 'headline', 'source', 'url', 'date']]
+        preprocessing_logger.info(f"Final feature set: {len(df.columns)} columns ({len(feature_cols)} features)")
+        preprocessing_logger.info(f"Target variable: target_stress_next_day")
+        
         return df
     
     def save_to_gold(self, df: pd.DataFrame) -> Path:
