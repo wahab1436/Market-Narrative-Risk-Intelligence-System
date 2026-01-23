@@ -22,19 +22,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 try:
     # Import configuration and logging first
     from src.utils.config_loader import config_loader
-    print("✓ Config loader imported successfully")
+    print("Config loader imported successfully")
 except ImportError as e:
     st.error(f"Failed to import config_loader: {e}")
     config_loader = None
 
 try:
-    # Import logger with simplified approach - FIXED
+    # Import logger with simplified approach
     import logging
     from src.utils.logger import get_dashboard_logger
     
     # Create dashboard logger
     logger = get_dashboard_logger()
-    print("✓ Logger imported successfully")
+    print("Logger imported successfully")
 except ImportError as e:
     st.error(f"Failed to import logger: {e}")
     # Create a minimal logger as fallback
@@ -45,7 +45,7 @@ except ImportError as e:
 try:
     # Try to import EDA visualizer
     from src.eda.visualization import EDAVisualizer
-    print("✓ EDAVisualizer imported successfully")
+    print("EDAVisualizer imported successfully")
 except ImportError as e:
     logger.warning(f"EDAVisualizer not available: {e}")
     EDAVisualizer = None
@@ -55,7 +55,7 @@ try:
     from src.models.regression.linear_regression import LinearRegressionModel
     from src.models.regression.ridge_regression import RidgeRegressionModel
     from src.models.regression.lasso_regression import LassoRegressionModel
-    print("✓ Model imports successful")
+    print("Model imports successful")
 except ImportError as e:
     logger.info(f"Model imports optional, continuing without: {e}")
     LinearRegressionModel = RidgeRegressionModel = LassoRegressionModel = None
@@ -80,7 +80,7 @@ class MarketRiskDashboard:
             }
         )
         
-        # Initialize logger - FIXED
+        # Initialize logger
         self.logger = logger
         
         # Initialize configuration
@@ -88,7 +88,7 @@ class MarketRiskDashboard:
             if config_loader:
                 self.config = config_loader.get_dashboard_config()
                 self.colors = self.config.get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
-                print("✓ Configuration loaded successfully")
+                print("Configuration loaded successfully")
             else:
                 self.config = {}
                 self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
@@ -148,7 +148,7 @@ class MarketRiskDashboard:
                     self.min_date = self.df['timestamp'].min().date()
                     self.max_date = self.df['timestamp'].max().date()
                 
-                self.logger.info(f"✓ Loaded {len(self.df)} records from {latest_file}")
+                self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
                 st.session_state.data_loaded = True
                 
             else:
@@ -163,7 +163,7 @@ class MarketRiskDashboard:
                         self.min_date = self.df['timestamp'].min().date()
                         self.max_date = self.df['timestamp'].max().date()
                     
-                    self.logger.info(f"✓ Loaded {len(self.df)} records from {latest_file}")
+                    self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
                     st.session_state.data_loaded = True
                 else:
                     # Check silver layer
@@ -179,7 +179,7 @@ class MarketRiskDashboard:
                                 self.min_date = self.df['timestamp'].min().date()
                                 self.max_date = self.df['timestamp'].max().date()
                             
-                            self.logger.info(f"✓ Loaded {len(self.df)} records from silver layer: {latest_file}")
+                            self.logger.info(f"Loaded {len(self.df)} records from silver layer: {latest_file}")
                             st.session_state.data_loaded = True
                         else:
                             self._create_sample_data()
@@ -402,7 +402,6 @@ class MarketRiskDashboard:
         
         return filtered_df
     
-    # [REST OF THE METHODS REMAIN THE SAME - keeping them for completeness]
     def render_overview(self):
         """Render system overview dashboard."""
         st.markdown("## System Overview")
@@ -665,9 +664,24 @@ class MarketRiskDashboard:
                 filtered_df,
                 x='sentiment_polarity',
                 y='weighted_stress_score',
-                title='Sentiment vs Stress Score Correlation',
-                trendline='ols'
+                title='Sentiment vs Stress Score Correlation'
             )
+            
+            # Calculate correlation coefficient manually
+            correlation = filtered_df[['sentiment_polarity', 'weighted_stress_score']].corr().iloc[0, 1]
+            
+            # Add correlation as annotation
+            fig2.add_annotation(
+                text=f'Correlation: {correlation:.3f}',
+                xref="paper", yref="paper",
+                x=0.05, y=0.95,
+                showarrow=False,
+                font=dict(size=12),
+                bgcolor="white",
+                bordercolor="black",
+                borderwidth=1
+            )
+            
             st.plotly_chart(fig2, use_container_width=True)
     
     def render_model_performance(self):
