@@ -1,12 +1,24 @@
 """
 Neural network model for non-linear stress estimation.
 """
+# Suppress TensorFlow warnings FIRST (before any TF imports)
+import os
+import warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=all, 1=filter INFO, 2=filter WARNING, 3=filter ERROR
+warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 import tensorflow as tf
+
+# Suppress TensorFlow logging
+tf.get_logger().setLevel('ERROR')
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
 from tensorflow import keras
 from tensorflow.keras import layers, callbacks
 import joblib
@@ -125,17 +137,19 @@ class NeuralNetworkModel:
         early_stopping = callbacks.EarlyStopping(
             monitor='val_loss',
             patience=10,
-            restore_best_weights=True
+            restore_best_weights=True,
+            verbose=0
         )
         
         reduce_lr = callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             factor=0.5,
             patience=5,
-            min_lr=1e-6
+            min_lr=1e-6,
+            verbose=0
         )
         
-        # Train model
+        # Train model (verbose=0 to suppress output)
         history = self.model.fit(
             X_train_scaled,
             y_train,
@@ -163,7 +177,7 @@ class NeuralNetworkModel:
             'mse': mse,
             'r2': r2,
             'training_history': history_dict,
-            'model_summary': self.model.summary()
+            'epochs_trained': len(history.history['loss'])
         }
         
         model_logger.info(f"Neural network trained: MSE={mse:.4f}, R2={r2:.4f}")
@@ -188,7 +202,7 @@ class NeuralNetworkModel:
         # Scale features
         X_scaled = self.scaler.transform(X)
         
-        # Make predictions
+        # Make predictions (verbose=0 to suppress output)
         predictions = self.model.predict(X_scaled, verbose=0).flatten()
         
         # Create results DataFrame
@@ -209,7 +223,7 @@ class NeuralNetworkModel:
         """
         # Save Keras model
         model_path = filepath.with_suffix('.keras')
-        self.model.save(model_path)
+        self.model.save(model_path, save_format='keras')
         
         # Save scaler and metadata
         joblib.dump({
