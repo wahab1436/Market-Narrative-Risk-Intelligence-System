@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Import project modules with proper error handling
 try:
-    # Import configuration and logging first
     from src.utils.config_loader import config_loader
     print("✓ Config loader imported successfully")
 except ImportError as e:
@@ -28,37 +27,22 @@ except ImportError as e:
     config_loader = None
 
 try:
-    # Import logger with simplified approach - FIXED
     import logging
     from src.utils.logger import get_dashboard_logger
-    
-    # Create dashboard logger
     logger = get_dashboard_logger()
     print("✓ Logger imported successfully")
 except ImportError as e:
     st.error(f"Failed to import logger: {e}")
-    # Create a minimal logger as fallback
     import logging
     logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO)
 
 try:
-    # Try to import EDA visualizer
     from src.eda.visualization import EDAVisualizer
     print("✓ EDAVisualizer imported successfully")
 except ImportError as e:
     logger.warning(f"EDAVisualizer not available: {e}")
     EDAVisualizer = None
-
-try:
-    # Try to import models (optional for dashboard)
-    from src.models.regression.linear_regression import LinearRegressionModel
-    from src.models.regression.ridge_regression import RidgeRegressionModel
-    from src.models.regression.lasso_regression import LassoRegressionModel
-    print("✓ Model imports successful")
-except ImportError as e:
-    logger.info(f"Model imports optional, continuing without: {e}")
-    LinearRegressionModel = RidgeRegressionModel = LassoRegressionModel = None
 
 
 class MarketRiskDashboard:
@@ -68,7 +52,6 @@ class MarketRiskDashboard:
     
     def __init__(self):
         """Initialize dashboard with professional settings."""
-        # Page configuration
         st.set_page_config(
             page_title="Market Narrative Risk Intelligence",
             layout="wide",
@@ -80,10 +63,8 @@ class MarketRiskDashboard:
             }
         )
         
-        # Initialize logger - FIXED
         self.logger = logger
         
-        # Initialize configuration
         try:
             if config_loader:
                 self.config = config_loader.get_dashboard_config()
@@ -97,19 +78,21 @@ class MarketRiskDashboard:
             self.config = {}
             self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
         
-        # Initialize EDA visualizer if available
         if EDAVisualizer:
             self.eda_visualizer = EDAVisualizer(theme="plotly_white")
         else:
             self.eda_visualizer = None
         
-        # Initialize session state
         self._init_session_state()
-        
-        # Load data
         self.load_data()
         
-        # Log initialization
+        # **FIX: Initialize missing attributes**
+        self.selected_regime = None  # Will be set in sidebar
+        self.anomaly_filter = 'All Data'
+        self.confidence_threshold = 0.7
+        self.start_date = None
+        self.end_date = None
+        
         self.logger.info("MarketRiskDashboard initialized successfully")
     
     def _init_session_state(self):
@@ -131,19 +114,15 @@ class MarketRiskDashboard:
             if not gold_dir.exists():
                 gold_dir.mkdir(parents=True, exist_ok=True)
             
-            # Look for prediction files first
             prediction_files = list(gold_dir.glob("*predictions*.parquet"))
             
             if prediction_files:
-                # Load the most recent predictions
                 latest_file = max(prediction_files, key=lambda x: x.stat().st_mtime)
                 self.df = pd.read_parquet(latest_file)
                 
-                # Ensure timestamp is datetime
                 if 'timestamp' in self.df.columns:
                     self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
                 
-                # Set date range for filters
                 if not self.df.empty and 'timestamp' in self.df.columns:
                     self.min_date = self.df['timestamp'].min().date()
                     self.max_date = self.df['timestamp'].max().date()
@@ -152,7 +131,6 @@ class MarketRiskDashboard:
                 st.session_state.data_loaded = True
                 
             else:
-                # Try to load any gold data (features)
                 gold_files = list(gold_dir.glob("features_*.parquet"))
                 if gold_files:
                     latest_file = max(gold_files, key=lambda x: x.stat().st_mtime)
@@ -166,7 +144,6 @@ class MarketRiskDashboard:
                     self.logger.info(f"✓ Loaded {len(self.df)} records from {latest_file}")
                     st.session_state.data_loaded = True
                 else:
-                    # Check silver layer
                     silver_dir = Path("data/silver")
                     if silver_dir.exists():
                         silver_files = list(silver_dir.glob("*.parquet"))
@@ -196,7 +173,6 @@ class MarketRiskDashboard:
         """Create sample data for demonstration."""
         dates = pd.date_range(end=datetime.now(), periods=60, freq='D')
         
-        # Create realistic sample data
         np.random.seed(42)
         base_trend = np.linspace(0, 2, len(dates))
         seasonal = 0.5 * np.sin(2 * np.pi * np.arange(len(dates)) / 30)
@@ -224,7 +200,6 @@ class MarketRiskDashboard:
             'market_breadth': np.random.uniform(0, 1, len(dates))
         })
         
-        # Ensure probabilities sum to 1
         probs = self.df[['prob_low', 'prob_medium', 'prob_high']].values
         probs = probs / probs.sum(axis=1, keepdims=True)
         self.df[['prob_low', 'prob_medium', 'prob_high']] = probs
@@ -254,7 +229,6 @@ class MarketRiskDashboard:
     def render_sidebar(self):
         """Render professional sidebar with filters and navigation."""
         with st.sidebar:
-            # System Information
             st.markdown("""
             <div style='padding: 10px; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px;'>
                 <p style='font-size: 0.9em; color: #6c757d; margin: 0;'>
@@ -270,15 +244,12 @@ class MarketRiskDashboard:
             
             st.markdown("### Navigation")
             
-            # View selection
             view_options = {
                 'overview': 'System Overview',
                 'stress_analysis': 'Stress Score Analysis',
                 'risk_regimes': 'Risk Regime Classification',
                 'anomaly_detection': 'Anomaly Detection',
-                'historical_similarity': 'Historical Similarity',
                 'model_performance': 'Model Performance',
-                'feature_analysis': 'Feature Analysis',
                 'data_export': 'Data Export'
             }
             
@@ -293,15 +264,11 @@ class MarketRiskDashboard:
             st.markdown("---")
             st.markdown("### Data Filters")
             
-            # Date range filter
             if hasattr(self, 'min_date') and hasattr(self, 'max_date'):
-                # **FIX: Handle case where min_date equals max_date**
                 if self.min_date == self.max_date:
-                    # Single date - use it for both start and end
                     default_start = self.min_date
                     default_end = self.max_date
                 else:
-                    # Multiple dates - default to last 30 days or available range
                     date_diff = (self.max_date - self.min_date).days
                     if date_diff > 30:
                         default_start = self.max_date - timedelta(days=30)
@@ -323,7 +290,18 @@ class MarketRiskDashboard:
             else:
                 self.start_date = self.end_date = datetime.now().date()
             
-            # Anomaly filter
+            # **FIX: Add regime filter**
+            if 'xgboost_risk_regime' in self.df.columns:
+                regime_options = ['All'] + sorted(self.df['xgboost_risk_regime'].unique().tolist())
+                selected_regime = st.selectbox(
+                    "Risk Regime Filter",
+                    options=regime_options,
+                    index=0
+                )
+                self.selected_regime = None if selected_regime == 'All' else selected_regime
+            else:
+                self.selected_regime = None
+            
             if 'is_anomaly' in self.df.columns:
                 anomaly_filter = st.radio(
                     "Anomaly Filter",
@@ -334,7 +312,6 @@ class MarketRiskDashboard:
             else:
                 self.anomaly_filter = 'All Data'
             
-            # Confidence threshold
             confidence_threshold = st.slider(
                 "Minimum Confidence Threshold",
                 min_value=0.0,
@@ -347,7 +324,6 @@ class MarketRiskDashboard:
             
             st.markdown("---")
             
-            # Data statistics
             with st.expander("Data Statistics", expanded=False):
                 if st.session_state.data_loaded:
                     total_records = len(self.df)
@@ -366,25 +342,21 @@ class MarketRiskDashboard:
         """Apply all sidebar filters to data."""
         filtered_df = df.copy()
         
-        # Date filter
-        if 'timestamp' in filtered_df.columns:
+        if 'timestamp' in filtered_df.columns and self.start_date and self.end_date:
             filtered_df = filtered_df[
                 (filtered_df['timestamp'].dt.date >= self.start_date) &
                 (filtered_df['timestamp'].dt.date <= self.end_date)
             ]
         
-        # Risk regime filter
         if self.selected_regime and 'xgboost_risk_regime' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['xgboost_risk_regime'] == self.selected_regime]
         
-        # Anomaly filter
         if 'is_anomaly' in filtered_df.columns:
             if self.anomaly_filter == 'Anomalies Only':
                 filtered_df = filtered_df[filtered_df['is_anomaly'] == 1]
             elif self.anomaly_filter == 'Exclude Anomalies':
                 filtered_df = filtered_df[filtered_df['is_anomaly'] == 0]
         
-        # Confidence filter for classification models
         prob_cols = [col for col in filtered_df.columns if col.startswith('prob_')]
         if prob_cols:
             max_probs = filtered_df[prob_cols].max(axis=1)
@@ -392,19 +364,16 @@ class MarketRiskDashboard:
         
         return filtered_df
     
-    # [REST OF THE METHODS REMAIN THE SAME - keeping them for completeness]
     def render_overview(self):
         """Render system overview dashboard."""
         st.markdown("## System Overview")
         
         filtered_df = self._apply_filters(self.df)
         
-        # Show data status
         if filtered_df.empty:
             st.warning("No data matches current filters. Please adjust your filter settings.")
             return
         
-        # Key metrics row
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -461,7 +430,6 @@ class MarketRiskDashboard:
         
         st.markdown("---")
         
-        # Show simple data table
         st.markdown("### Recent Articles")
         display_cols = ['timestamp', 'headline', 'sentiment_polarity', 'weighted_stress_score']
         display_cols = [col for col in display_cols if col in filtered_df.columns]
@@ -474,7 +442,6 @@ class MarketRiskDashboard:
         else:
             st.info("No displayable columns available in the data")
     
-    # Placeholder methods for other views
     def render_stress_analysis(self):
         st.markdown("## Stress Analysis")
         st.info("Detailed stress analysis view - Coming soon after model training completes")
@@ -487,17 +454,9 @@ class MarketRiskDashboard:
         st.markdown("## Anomaly Detection")
         st.info("Anomaly detection view - Coming soon after model training completes")
     
-    def render_historical_similarity(self):
-        st.markdown("## Historical Similarity")
-        st.info("Historical similarity analysis - Coming soon after model training completes")
-    
     def render_model_performance(self):
         st.markdown("## Model Performance")
         st.info("Model performance metrics - Coming soon after model training completes")
-    
-    def render_feature_analysis(self):
-        st.markdown("## Feature Analysis")
-        st.info("Feature importance analysis - Coming soon after model training completes")
     
     def render_data_export(self):
         st.markdown("## Data Export")
@@ -516,31 +475,21 @@ class MarketRiskDashboard:
     def run(self):
         """Run the dashboard application."""
         try:
-            # Render header
             self.render_header()
-            
-            # Render sidebar (navigation and filters)
             self.render_sidebar()
             
-            # Render main content based on selected view
             view_handlers = {
                 'overview': self.render_overview,
                 'stress_analysis': self.render_stress_analysis,
                 'risk_regimes': self.render_risk_regimes,
                 'anomaly_detection': self.render_anomaly_detection,
-                'historical_similarity': self.render_historical_similarity,
                 'model_performance': self.render_model_performance,
-                'feature_analysis': self.render_feature_analysis,
                 'data_export': self.render_data_export
             }
             
             current_view = st.session_state.get('current_view', 'overview')
             handler = view_handlers.get(current_view, self.render_overview)
-            
-            # Execute the view handler
             handler()
-            
-            # Render footer
             self.render_footer()
             
             self.logger.info(f"Dashboard view '{current_view}' rendered successfully")
