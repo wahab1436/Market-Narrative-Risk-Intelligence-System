@@ -1,4 +1,64 @@
-"""
+def run_pipeline_background():
+    """Run pipeline in background thread."""
+    try:
+        with st.spinner("Running pipeline... Please wait (2-3 minutes)"):
+            # Create progress placeholder
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Initialize orchestrator
+            status_text.text("Initializing pipeline...")
+            orchestrator = PipelineOrchestrator()
+            progress_bar.progress(10)
+            
+            # Run scraping
+            status_text.text("Step 1/4: Scraping market data...")
+            try:
+                scrape_success = orchestrator.run_scraping()
+                progress_bar.progress(30)
+                
+                if not scrape_success:
+                    st.error("Scraping failed - No data collected")
+                    return False
+                else:
+                    st.success("Scraping completed")
+            except Exception as e:
+                st.error(f"Scraping error: {e}")
+                with st.expander("Scraping Error Details"):
+                    import traceback
+                    st.code(traceback.format_exc())
+                return False
+            
+            # Run cleaning
+            status_text.text("Step 2/4: Cleaning data...")
+            try:
+                clean_success = orchestrator.run_cleaning()
+                progress_bar.progress(50)
+                
+                if not clean_success:
+                    st.error("Cleaning failed - Check data format")
+                    # Show bronze file info for debugging
+                    if orchestrator.bronze_path:
+                        st.info(f"Bronze file: {orchestrator.bronze_path}")
+                        try:
+                            import pandas as pd
+                            df = pd.read_parquet(orchestrator.bronze_path)
+                            st.write(f"Rows: {len(df)}, Columns: {list(df.columns)}")
+                            st.dataframe(df.head())
+                        except Exception as e:
+                            st.error(f"Can't read bronze file: {e}")
+                    return False
+                else:
+                    st.success("Cleaning completed")
+            except Exception as e:
+                st.error(f"Cleaning error: {e}")
+                with st.expander("Cleaning Error Details"):
+                    import traceback
+                    st.code(traceback.format_exc())
+                return False
+            
+            # Run feature engineering
+            status_text.text("Step 3/4: Engineering features...")"""
 Streamlit App - Integrated with Backend Pipeline
 Entry point that connects dashboard with main.py backend
 """
@@ -144,9 +204,9 @@ def main():
     
     with col1:
         if is_fresh:
-            st.success(f"✓ {status}")
+            st.success(f"Status: {status}")
         else:
-            st.warning(f"⚠ {status}")
+            st.warning(f"Status: {status}")
     
     with col2:
         if st.button("Refresh Data", use_container_width=True, type="primary"):
