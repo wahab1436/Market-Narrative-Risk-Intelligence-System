@@ -1,38 +1,20 @@
 """
-Scraper module - Use existing scraper file
+Scraper module - Investing.com Market Data Scraper
 """
-# Import from the existing investing_scraper.py file
-try:
-    from src.scraper.investing_scraper import FastRSSNewsScraper, scrape_and_save as scrape_news
-    
-    def scrape_and_save():
-        """Use existing RSS scraper."""
-        return scrape_news()
-        
-except ImportError:
-    # Fallback: Create minimal scraper
-    import pandas as pd
-    from pathlib import Path
-    from datetime import datetime
-    
-    def scrape_and_save():
-        """Minimal fallback scraper."""
-        # Create sample data
-        data = [{
-            'headline': 'Market Update',
-            'snippet': 'Sample market data',
-            'timestamp': datetime.now().isoformat(),
-            'asset_tags': [],
-            'url': 'https://finance.yahoo.com',
-            'source': 'sample',
-            'scraped_at': datetime.now().isoformat()
-        }]
-        
-        df = pd.DataFrame(data)
-        filepath = Path("data/bronze") / f"sample_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(filepath, index=False)
-        
-        return filepath
+from src.scraper.investing_scraper import SafeInvestingScraper, scrape_investing_data
 
-__all__ = ['scrape_and_save']
+def scrape_and_save():
+    """
+    Scrape real market data from Investing.com.
+    Uses priority 2 (critical + important assets) for balanced speed/coverage.
+    
+    Returns:
+        Path to saved bronze file
+    """
+    # Use priority 2: Critical + Important assets (balanced approach)
+    # Priority 1 = Only critical (fastest)
+    # Priority 2 = Critical + Important (recommended)
+    # Priority 3 = All assets (slowest)
+    return scrape_investing_data(priority_filter=2)
+
+__all__ = ['scrape_and_save', 'SafeInvestingScraper', 'scrape_investing_data']
