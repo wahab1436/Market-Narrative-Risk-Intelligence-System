@@ -1,6 +1,6 @@
 """
 Interactive dashboard for market narrative risk intelligence.
 """
-from src.dashboard.app import RiskIntelligenceDashboard, main as run_dashboard
+from src.dashboard.app import MarketRiskDashboard, main
 
-__all__ = ['RiskIntelligenceDashboard', 'run_dashboard']
+__all__ = ['MarketRiskDashboard', 'main']
