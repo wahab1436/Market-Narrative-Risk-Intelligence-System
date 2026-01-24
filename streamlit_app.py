@@ -15,8 +15,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Import backend pipeline
 from main import PipelineOrchestrator
 
-# Import dashboard
-from src.dashboard.app import MarketRiskDashboard
+# Import dashboard directly (bypass __init__.py issue)
+import sys
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+from dashboard.app import MarketRiskDashboard
 
 
 def check_data_status():
