@@ -1,6 +1,6 @@
 """
-Investing.com Real Market Data Scraper - PRODUCTION SAFE VERSION
-Scrapes ACTUAL market data with anti-ban protection
+Investing.com Real Market Data Scraper - CLOUDFLARE BYPASS VERSION
+Scrapes ACTUAL market data with anti-ban protection using cloudscraper
 Uses proper rate limiting, rotating headers, and retry logic
 """
 import time
@@ -8,13 +8,11 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
-import requests
+import cloudscraper
 import pandas as pd
 from bs4 import BeautifulSoup
 import json
 import re
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 try:
     from src.utils.logger import scraper_logger
@@ -26,7 +24,7 @@ except ImportError:
 
 class SafeInvestingScraper:
     """
-    Production-safe scraper for Investing.com with anti-ban measures.
+    Production-safe scraper for Investing.com with Cloudflare bypass.
     """
     
     # Rotate through multiple user agents
@@ -53,7 +51,7 @@ class SafeInvestingScraper:
         self.request_count = 0
         self.failed_count = 0
         
-        # Create session with retry logic
+        # Create cloudscraper session to bypass Cloudflare
         self.session = self._create_safe_session()
         
         # Market instruments to track
@@ -91,28 +89,18 @@ class SafeInvestingScraper:
         scraper_logger.info(f"Initialized SafeInvestingScraper with {len(self.instruments)} instruments")
         scraper_logger.info(f"Delay range: {delay_range[0]}-{delay_range[1]}s, Max retries: {max_retries}")
     
-    def _create_safe_session(self) -> requests.Session:
-        """Create session with retry logic and connection pooling."""
-        session = requests.Session()
-        
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=self.max_retries,
-            backoff_factor=2,  # Wait 1s, 2s, 4s, 8s...
-            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these status codes
-            allowed_methods=["GET", "HEAD", "OPTIONS"]
+    def _create_safe_session(self):
+        """Create cloudscraper session to bypass Cloudflare."""
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'mobile': False
+            },
+            delay=10,  # Delay for solving challenges
+            interpreter='native'  # Use native JS interpreter
         )
-        
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=10,
-            pool_maxsize=20
-        )
-        
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        return session
+        return scraper
     
     def _get_random_headers(self) -> Dict[str, str]:
         """Get randomized headers to avoid detection."""
@@ -128,7 +116,7 @@ class SafeInvestingScraper:
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Cache-Control': 'max-age=0',
-            'Referer': 'https://www.google.com/',  # Look like we came from Google
+            'Referer': 'https://www.google.com/',
         }
     
     def _respectful_delay(self):
@@ -137,7 +125,7 @@ class SafeInvestingScraper:
         scraper_logger.debug(f"Waiting {delay:.1f}s before next request...")
         time.sleep(delay)
     
-    def _safe_request(self, url: str) -> Optional[requests.Response]:
+    def _safe_request(self, url: str) -> Optional[cloudscraper.CloudScraper]:
         """
         Make a safe HTTP request with retries and error handling.
         
@@ -156,7 +144,7 @@ class SafeInvestingScraper:
                 response = self.session.get(
                     url,
                     headers=headers,
-                    timeout=15,
+                    timeout=30,  # Increased timeout for Cloudflare challenges
                     allow_redirects=True
                 )
                 
@@ -164,20 +152,22 @@ class SafeInvestingScraper:
                 
                 # Check for rate limiting
                 if response.status_code == 429:
-                    wait_time = 2 ** attempt * 5  # Exponential backoff: 5s, 10s, 20s
+                    wait_time = 2 ** attempt * 5
                     scraper_logger.warning(f"Rate limited! Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
+                    continue
+                
+                # Check for Cloudflare block
+                if response.status_code == 403:
+                    scraper_logger.warning(f"403 Forbidden on attempt {attempt + 1}. Recreating session...")
+                    self.session = self._create_safe_session()
+                    time.sleep(2 ** attempt * 3)
                     continue
                 
                 response.raise_for_status()
                 return response
                 
-            except requests.exceptions.Timeout:
-                scraper_logger.warning(f"Timeout on attempt {attempt + 1}/{self.max_retries}")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    
-            except requests.exceptions.RequestException as e:
+            except Exception as e:
                 scraper_logger.warning(f"Request error on attempt {attempt + 1}/{self.max_retries}: {e}")
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)
@@ -192,16 +182,13 @@ class SafeInvestingScraper:
             return 0.0
         
         try:
-            # Remove common formatting
             cleaned = str(text).strip()
             cleaned = cleaned.replace(',', '').replace('$', '').replace('€', '').replace('£', '')
             cleaned = cleaned.replace('%', '').replace('+', '').replace(' ', '')
             
-            # Handle negative numbers in parentheses
             if '(' in cleaned and ')' in cleaned:
                 cleaned = '-' + cleaned.replace('(', '').replace(')', '')
             
-            # Extract first number found
             match = re.search(r'-?\d+\.?\d*', cleaned)
             if match:
                 return float(match.group())
@@ -213,7 +200,8 @@ class SafeInvestingScraper:
     
     def _extract_price_data(self, soup: BeautifulSoup) -> Dict[str, float]:
         """
-        Extract price data from Investing.com page using multiple strategies.
+        Extract price data from Investing.com page.
+        PRIORITY: JSON-LD structured data (most stable)
         
         Args:
             soup: BeautifulSoup object
@@ -223,10 +211,51 @@ class SafeInvestingScraper:
         """
         data = {}
         
-        # Strategy 1: Look for data-test attributes (most reliable)
-        price_elem = soup.find('div', {'data-test': 'instrument-price-last'})
-        if price_elem:
-            data['price'] = self._parse_price(price_elem.text)
+        # PRIORITY STRATEGY 1: JSON-LD structured data (most reliable and stable)
+        script_tags = soup.find_all('script', {'type': 'application/ld+json'})
+        for script in script_tags:
+            try:
+                if not script.string:
+                    continue
+                    
+                json_data = json.loads(script.string)
+                
+                # Handle array of JSON-LD objects
+                if isinstance(json_data, list):
+                    for item in json_data:
+                        if isinstance(item, dict) and '@type' in item:
+                            if item.get('@type') in ['Product', 'FinancialProduct']:
+                                if 'offers' in item and isinstance(item['offers'], dict):
+                                    price = item['offers'].get('price')
+                                    if price and 'price' not in data:
+                                        data['price'] = float(price)
+                                        scraper_logger.debug(f"Found price in JSON-LD: {price}")
+                                
+                                if 'lowPrice' in item:
+                                    data['day_low'] = float(item['lowPrice'])
+                                if 'highPrice' in item:
+                                    data['day_high'] = float(item['highPrice'])
+                
+                # Handle single JSON-LD object
+                elif isinstance(json_data, dict):
+                    if 'price' in json_data and 'price' not in data:
+                        data['price'] = float(json_data['price'])
+                        scraper_logger.debug(f"Found price in JSON-LD object: {json_data['price']}")
+                    if 'lowPrice' in json_data:
+                        data['day_low'] = float(json_data['lowPrice'])
+                    if 'highPrice' in json_data:
+                        data['day_high'] = float(json_data['highPrice'])
+                        
+            except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+                scraper_logger.debug(f"Error parsing JSON-LD: {e}")
+                continue
+        
+        # STRATEGY 2: Data attributes (reliable when present)
+        if 'price' not in data:
+            price_elem = soup.find('div', {'data-test': 'instrument-price-last'})
+            if price_elem:
+                data['price'] = self._parse_price(price_elem.text)
+                scraper_logger.debug(f"Found price via data-test: {price_elem.text}")
         
         change_elem = soup.find('span', {'data-test': 'instrument-price-change'})
         if change_elem:
@@ -236,37 +265,23 @@ class SafeInvestingScraper:
         if change_pct_elem:
             data['change_percent'] = self._parse_price(change_pct_elem.text)
         
-        # Strategy 2: Look for specific CSS classes
+        # STRATEGY 3: Meta tags
         if 'price' not in data:
-            # Try large price displays
+            meta_price = soup.find('meta', {'property': 'og:price:amount'})
+            if meta_price and meta_price.get('content'):
+                data['price'] = self._parse_price(meta_price['content'])
+                scraper_logger.debug(f"Found price in meta tag: {meta_price['content']}")
+        
+        # STRATEGY 4: CSS classes (least reliable, last resort)
+        if 'price' not in data:
             for class_pattern in ['text-5xl', 'text-4xl', 'instrument-price', 'last-price']:
                 elem = soup.find(class_=re.compile(class_pattern, re.I))
                 if elem:
                     price = self._parse_price(elem.text)
                     if price > 0:
                         data['price'] = price
+                        scraper_logger.debug(f"Found price via CSS class {class_pattern}: {price}")
                         break
-        
-        # Strategy 3: Look in JSON-LD structured data
-        script_tags = soup.find_all('script', {'type': 'application/ld+json'})
-        for script in script_tags:
-            try:
-                json_data = json.loads(script.string)
-                if isinstance(json_data, dict):
-                    if 'price' in json_data and 'price' not in data:
-                        data['price'] = float(json_data['price'])
-                    if 'lowPrice' in json_data:
-                        data['day_low'] = float(json_data['lowPrice'])
-                    if 'highPrice' in json_data:
-                        data['day_high'] = float(json_data['highPrice'])
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-        
-        # Strategy 4: Look in meta tags
-        if 'price' not in data:
-            meta_price = soup.find('meta', {'property': 'og:price:amount'})
-            if meta_price and meta_price.get('content'):
-                data['price'] = self._parse_price(meta_price['content'])
         
         # Calculate derived values
         if 'price' in data and 'change' in data and data['change'] != 0:
@@ -302,7 +317,7 @@ class SafeInvestingScraper:
         try:
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Extract price data using multiple strategies
+            # Extract price data using prioritized strategies
             price_data = self._extract_price_data(soup)
             
             if 'price' not in price_data or price_data['price'] == 0:
@@ -386,7 +401,7 @@ class SafeInvestingScraper:
         scraper_logger.info(f"Failed: {self.failed_count}")
         scraper_logger.info(f"Total requests: {self.request_count}")
         scraper_logger.info(f"Time elapsed: {elapsed:.1f}s")
-        scraper_logger.info(f"Avg time per request: {elapsed/self.request_count:.1f}s")
+        scraper_logger.info(f"Avg time per request: {elapsed/self.request_count:.1f}s" if self.request_count > 0 else "N/A")
         scraper_logger.info("="*70)
         
         return market_data
@@ -414,13 +429,13 @@ class SafeInvestingScraper:
             
             # VIX is direct fear gauge
             if 'VIX' in asset:
-                vix_stress = min(price / 10, 10)  # VIX 30+ = max stress
-                stress_factors.append(vix_stress * 3.0)  # Triple weight for VIX
+                vix_stress = min(price / 10, 10)
+                stress_factors.append(vix_stress * 3.0)
             
             # Large moves create stress
-            move_stress = min(abs(change_pct) / 2, 10)  # 20% move = max stress
+            move_stress = min(abs(change_pct) / 2, 10)
             
-            # Weight by priority (priority 1 = 3x, priority 2 = 2x, priority 3 = 1x)
+            # Weight by priority
             weight = (4 - priority)
             stress_factors.append(move_stress * weight)
             
@@ -473,7 +488,6 @@ class SafeInvestingScraper:
         for asset_type, items in sorted(by_type.items()):
             overview_lines.append(f"{asset_type.upper()}:")
             
-            # Sort by absolute change
             items_sorted = sorted(items, key=lambda x: abs(x.get('change_percent', 0)), reverse=True)
             
             for item in items_sorted:
@@ -501,7 +515,7 @@ class SafeInvestingScraper:
             'scraper_stats': {
                 'requests': self.request_count,
                 'failures': self.failed_count,
-                'success_rate': f"{(len(market_data)/self.request_count*100):.1f}%"
+                'success_rate': f"{(len(market_data)/self.request_count*100):.1f}%" if self.request_count > 0 else "0%"
             }
         })
         
@@ -509,10 +523,6 @@ class SafeInvestingScraper:
         for data in market_data:
             change_pct = abs(data.get('change_percent', 0))
             
-            # Create article for:
-            # - Any move > 2%
-            # - Priority 1 assets with move > 1%
-            # - VIX always
             should_create = (
                 change_pct > 2.0 or
                 (data.get('priority') == 1 and change_pct > 1.0) or
@@ -540,7 +550,6 @@ class SafeInvestingScraper:
                         f"Today's range: ${data['day_low']:.2f} - ${data['day_high']:.2f}. "
                     )
                 
-                # Add context based on type
                 if 'VIX' in data['asset']:
                     if data['price'] > 30:
                         snippet_parts.append("Market fear gauge showing high volatility. ")
@@ -591,30 +600,21 @@ def scrape_investing_data(priority_filter: Optional[int] = None):
     
     Args:
         priority_filter: Only scrape priority <= this value (1, 2, or 3)
-                        1 = Only critical assets (fastest)
-                        2 = Critical + important (recommended)
-                        3 = All assets (comprehensive but slow)
-                        None = All assets
     
     Returns:
         Path to saved bronze file
     """
     scraper = SafeInvestingScraper(
-        delay_range=(3, 7),  # 3-7 seconds between requests
+        delay_range=(3, 7),
         max_retries=3
     )
     
     try:
-        # Scrape all instruments
         market_data = scraper.scrape_all(priority_filter=priority_filter)
         
         if market_data:
-            # Convert to articles
             articles = scraper.create_articles(market_data)
-            
-            # Save to bronze
             filepath = scraper.save_to_bronze(articles)
-            
             return filepath
         else:
             scraper_logger.error("No market data collected")
@@ -630,7 +630,7 @@ def scrape_investing_data(priority_filter: Optional[int] = None):
 
 if __name__ == "__main__":
     print("\n" + "="*70)
-    print("INVESTING.COM SAFE SCRAPER")
+    print("INVESTING.COM SAFE SCRAPER - CLOUDFLARE BYPASS")
     print("="*70)
     print("\nPriority levels:")
     print("  1 = Critical only (S&P, VIX, Gold, etc.) - FAST")
@@ -638,7 +638,6 @@ if __name__ == "__main__":
     print("  3 = All assets - COMPREHENSIVE")
     print("\n" + "="*70 + "\n")
     
-    # Run with priority 2 (balanced)
     result = scrape_investing_data(priority_filter=2)
     
     if result:
@@ -647,7 +646,6 @@ if __name__ == "__main__":
         print(f"{'='*70}")
         print(f"\nData saved to: {result}")
         
-        # Display summary
         df = pd.read_parquet(result)
         print(f"\nCollected: {len(df)} articles")
         
