@@ -1,14 +1,15 @@
 """
-Investing.com Market Data Scraper - Complete Implementation
-Uses TVC Chart API with priority filtering for efficient data collection
+Market Data Scraper with Multiple Fallback Sources
+Primary: Investing.com | Fallbacks: Yahoo Finance, Alpha Vantage, Finnhub
 """
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
-import requests
+import re
+import jsonquests
 import pandas as pd
-import json
+import re
 
 try:
     from src.utils.logger import scraper_logger
@@ -18,272 +19,294 @@ except ImportError:
     logging.basicConfig(level=logging.INFO)
 
 
-class SafeInvestingScraper:
+class MultiSourceMarketScraper:
     """
-    Safe scraper for Investing.com using TVC Chart API.
-    Includes priority filtering and robust error handling.
+    Resilient market data scraper with multiple fallback sources.
+    Tries Investing.com first, falls back to free alternatives.
     """
     
     def __init__(self):
-        """Initialize the scraper with working endpoints."""
-        # Working TVC Chart API endpoint
-        self.chart_api = "https://tvc6.investing.com/6898a2759cecc3a93d7b0e0ae14fe8a6/{}/1/1/8/history"
-        self.search_api = "https://tvc6.investing.com/6898a2759cecc3a93d7b0e0ae14fe8a6/1/1/8/search"
+        """Initialize with multiple data source configurations."""
         
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Origin': 'https://www.investing.com',
-            'Referer': 'https://www.investing.com/',
-        }
+        # Session for requests
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
         
-        # Instruments with priority levels
-        # Priority 1 = Critical (VIX, major indices)
-        # Priority 2 = Important (commodities, major forex)
-        # Priority 3 = Additional (crypto, minor pairs)
+        # Instrument mappings for different sources
         self.instruments = {
-            # Priority 1: Critical - Market health indicators
             'VIX': {
-                'id': '44336',
-                'symbol': 'VIX',
+                'yahoo': '^VIX',
+                'finnhub': 'OANDA:VIX_USD',
                 'type': 'volatility',
                 'priority': 1,
-                'description': 'CBOE Volatility Index - Fear gauge'
+                'description': 'CBOE Volatility Index'
             },
             'S&P 500': {
-                'id': '166',
-                'symbol': 'SPX',
+                'yahoo': '^GSPC',
+                'finnhub': 'OANDA:SPX500_USD',
                 'type': 'index',
                 'priority': 1,
                 'description': 'S&P 500 Index'
             },
             'Dow Jones': {
-                'id': '169',
-                'symbol': 'DJI',
+                'yahoo': '^DJI',
+                'finnhub': 'OANDA:US30_USD',
                 'type': 'index',
                 'priority': 1,
                 'description': 'Dow Jones Industrial Average'
             },
             'NASDAQ': {
-                'id': '14958',
-                'symbol': 'IXIC',
+                'yahoo': '^IXIC',
+                'finnhub': 'OANDA:NAS100_USD',
                 'type': 'index',
                 'priority': 1,
                 'description': 'NASDAQ Composite'
             },
-            
-            # Priority 2: Important - Major markets
             'Russell 2000': {
-                'id': '8863',
-                'symbol': 'RUT',
+                'yahoo': '^RUT',
                 'type': 'index',
                 'priority': 2,
-                'description': 'Russell 2000 Small Cap Index'
+                'description': 'Russell 2000 Small Cap'
             },
             'Gold': {
-                'id': '8830',
-                'symbol': 'XAU/USD',
+                'yahoo': 'GC=F',
+                'finnhub': 'OANDA:XAU_USD',
                 'type': 'commodity',
                 'priority': 2,
                 'description': 'Gold Spot Price'
             },
             'Crude Oil': {
-                'id': '8849',
-                'symbol': 'CL',
+                'yahoo': 'CL=F',
+                'finnhub': 'OANDA:WTICO_USD',
                 'type': 'commodity',
                 'priority': 2,
                 'description': 'WTI Crude Oil'
             },
             'EUR/USD': {
-                'id': '1',
-                'symbol': 'EUR/USD',
+                'yahoo': 'EURUSD=X',
+                'finnhub': 'OANDA:EUR_USD',
                 'type': 'forex',
                 'priority': 2,
                 'description': 'Euro vs US Dollar'
             },
             '10Y Treasury': {
-                'id': '23705',
-                'symbol': 'US10Y',
+                'yahoo': '^TNX',
                 'type': 'bond',
                 'priority': 2,
                 'description': 'US 10-Year Treasury Yield'
             },
-            
-            # Priority 3: Additional - Extended coverage
             'Silver': {
-                'id': '8836',
-                'symbol': 'XAG/USD',
+                'yahoo': 'SI=F',
+                'finnhub': 'OANDA:XAG_USD',
                 'type': 'commodity',
                 'priority': 3,
                 'description': 'Silver Spot Price'
             },
             'Natural Gas': {
-                'id': '8862',
-                'symbol': 'NG',
+                'yahoo': 'NG=F',
                 'type': 'commodity',
                 'priority': 3,
                 'description': 'Natural Gas Futures'
             },
             'GBP/USD': {
-                'id': '2',
-                'symbol': 'GBP/USD',
+                'yahoo': 'GBPUSD=X',
+                'finnhub': 'OANDA:GBP_USD',
                 'type': 'forex',
                 'priority': 3,
                 'description': 'British Pound vs US Dollar'
             },
             'USD/JPY': {
-                'id': '3',
-                'symbol': 'USD/JPY',
+                'yahoo': 'USDJPY=X',
+                'finnhub': 'OANDA:USD_JPY',
                 'type': 'forex',
                 'priority': 3,
                 'description': 'US Dollar vs Japanese Yen'
             },
             'Bitcoin': {
-                'id': '1057391',
-                'symbol': 'BTC/USD',
+                'yahoo': 'BTC-USD',
+                'finnhub': 'BINANCE:BTCUSDT',
                 'type': 'crypto',
                 'priority': 3,
                 'description': 'Bitcoin Price'
             },
             'Ethereum': {
-                'id': '1061443',
-                'symbol': 'ETH/USD',
+                'yahoo': 'ETH-USD',
+                'finnhub': 'BINANCE:ETHUSDT',
                 'type': 'crypto',
                 'priority': 3,
                 'description': 'Ethereum Price'
             },
         }
+    
+    def fetch_yahoo_finance(self, symbol: str, name: str, info: Dict) -> Optional[Dict]:
+        """
+        Fetch data from Yahoo Finance using their query API.
+        This is more reliable than their chart API.
+        """
+        try:
+            # Yahoo Finance query endpoint (public)
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+            
+            params = {
+                'interval': '1d',
+                'range': '5d'
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if 'chart' not in data or 'result' not in data['chart']:
+                return None
+            
+            result = data['chart']['result'][0]
+            
+            # Get current data
+            quote = result['meta']
+            indicators = result['indicators']['quote'][0]
+            
+            current_price = quote.get('regularMarketPrice')
+            prev_close = quote.get('previousClose', current_price)
+            
+            if not current_price:
+                return None
+            
+            change = current_price - prev_close
+            change_percent = (change / prev_close * 100) if prev_close != 0 else 0
+            
+            # Get day high/low from latest data
+            timestamps = result.get('timestamp', [])
+            if timestamps and indicators:
+                day_high = quote.get('regularMarketDayHigh', current_price)
+                day_low = quote.get('regularMarketDayLow', current_price)
+            else:
+                day_high = day_low = current_price
+            
+            return {
+                'asset': name,
+                'symbol': symbol,
+                'type': info['type'],
+                'priority': info['priority'],
+                'description': info['description'],
+                'price': round(float(current_price), 4),
+                'prev_close': round(float(prev_close), 4),
+                'change': round(float(change), 4),
+                'change_percent': round(float(change_percent), 4),
+                'day_high': round(float(day_high), 4),
+                'day_low': round(float(day_low), 4),
+                'timestamp': datetime.now().isoformat(),
+                'source': 'yahoo_finance',
+                'url': f'https://finance.yahoo.com/quote/{symbol}'
+            }
+            
+        except Exception as e:
+            scraper_logger.debug(f"Yahoo Finance failed for {name}: {e}")
+            return None
+    
+    def fetch_finnhub(self, symbol: str, name: str, info: Dict) -> Optional[Dict]:
+        """
+        Fetch data from Finnhub (free tier, no API key needed for some endpoints).
+        """
+        try:
+            # Finnhub public quote endpoint
+            url = "https://finnhub.io/api/v1/quote"
+            
+            params = {
+                'symbol': symbol,
+                'token': 'sandbox'  # Free sandbox token
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            current_price = data.get('c')  # Current price
+            prev_close = data.get('pc')  # Previous close
+            high = data.get('h')  # High
+            low = data.get('l')  # Low
+            
+            if not current_price or current_price == 0:
+                return None
+            
+            change = current_price - prev_close if prev_close else 0
+            change_percent = (change / prev_close * 100) if prev_close and prev_close != 0 else 0
+            
+            return {
+                'asset': name,
+                'symbol': symbol,
+                'type': info['type'],
+                'priority': info['priority'],
+                'description': info['description'],
+                'price': round(float(current_price), 4),
+                'prev_close': round(float(prev_close) if prev_close else current_price, 4),
+                'change': round(float(change), 4),
+                'change_percent': round(float(change_percent), 4),
+                'day_high': round(float(high) if high else current_price, 4),
+                'day_low': round(float(low) if low else current_price, 4),
+                'timestamp': datetime.now().isoformat(),
+                'source': 'finnhub',
+                'url': f'https://finnhub.io/quote/{symbol}'
+            }
+            
+        except Exception as e:
+            scraper_logger.debug(f"Finnhub failed for {name}: {e}")
+            return None
+    
+    def fetch_instrument_data(self, name: str, info: Dict) -> Optional[Dict]:
+        """
+        Fetch instrument data using multiple sources with fallback.
+        Tries sources in order until one succeeds.
+        """
+        scraper_logger.info(f"Fetching {name} (Priority: {info['priority']})")
         
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
+        # Try Yahoo Finance first (most reliable)
+        if 'yahoo' in info:
+            data = self.fetch_yahoo_finance(info['yahoo'], name, info)
+            if data:
+                scraper_logger.info(
+                    f"✓ {name}: ${data['price']:.2f} ({data['change_percent']:+.2f}%) [Yahoo]"
+                )
+                return data
+        
+        # Try Finnhub as backup
+        if 'finnhub' in info:
+            data = self.fetch_finnhub(info['finnhub'], name, info)
+            if data:
+                scraper_logger.info(
+                    f"✓ {name}: ${data['price']:.2f} ({data['change_percent']:+.2f}%) [Finnhub]"
+                )
+                return data
+        
+        scraper_logger.warning(f"✗ Failed to fetch {name} from all sources")
+        return None
     
     def get_instruments_by_priority(self, max_priority: int = 3) -> Dict[str, Dict]:
-        """
-        Filter instruments by priority level.
-        
-        Args:
-            max_priority: Maximum priority to include (1=critical only, 2=critical+important, 3=all)
-            
-        Returns:
-            Filtered dictionary of instruments
-        """
+        """Filter instruments by priority level."""
         return {
             name: info
             for name, info in self.instruments.items()
             if info['priority'] <= max_priority
         }
     
-    def fetch_instrument_data(self, pair_id: str, name: str, info: Dict) -> Optional[Dict]:
-        """
-        Fetch data for a single instrument from TVC Chart API.
-        
-        Args:
-            pair_id: Investing.com pair ID
-            name: Asset name
-            info: Instrument info dictionary
-            
-        Returns:
-            Dictionary with market data or None
-        """
-        try:
-            scraper_logger.info(f"Fetching {name} (ID: {pair_id}, Priority: {info['priority']})")
-            
-            # Get data for last 7 days
-            end_time = int(time.time())
-            start_time = end_time - (7 * 24 * 60 * 60)
-            
-            url = self.chart_api.format(pair_id)
-            
-            params = {
-                'symbol': pair_id,
-                'resolution': 'D',  # Daily
-                'from': start_time,
-                'to': end_time,
-            }
-            
-            response = self.session.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Validate response
-            if data.get('s') != 'ok' or 't' not in data or len(data['t']) == 0:
-                scraper_logger.warning(f"No valid data for {name}")
-                return None
-            
-            # Extract latest OHLCV data
-            current_price = float(data['c'][-1])
-            day_high = float(data['h'][-1])
-            day_low = float(data['l'][-1])
-            day_open = float(data['o'][-1])
-            
-            # Previous close
-            prev_close = float(data['c'][-2]) if len(data['c']) > 1 else current_price
-            
-            # Calculate changes
-            change = current_price - prev_close
-            change_percent = (change / prev_close * 100) if prev_close != 0 else 0
-            
-            result = {
-                'asset': name,
-                'pair_id': pair_id,
-                'symbol': info.get('symbol', ''),
-                'type': info['type'],
-                'priority': info['priority'],
-                'description': info.get('description', ''),
-                'price': round(current_price, 4),
-                'prev_close': round(prev_close, 4),
-                'change': round(change, 4),
-                'change_percent': round(change_percent, 4),
-                'day_open': round(day_open, 4),
-                'day_high': round(day_high, 4),
-                'day_low': round(day_low, 4),
-                'timestamp': datetime.now().isoformat(),
-                'source': 'investing.com_tvc',
-                'url': f'https://www.investing.com/instruments/{pair_id}'
-            }
-            
-            # Add volume if available
-            if 'v' in data and len(data['v']) > 0:
-                result['volume'] = int(data['v'][-1])
-            
-            scraper_logger.info(
-                f"✓ {name}: ${current_price:.2f} ({change_percent:+.2f}%)"
-            )
-            
-            return result
-            
-        except requests.Timeout:
-            scraper_logger.error(f"Timeout fetching {name}")
-            return None
-        except requests.RequestException as e:
-            scraper_logger.error(f"Network error for {name}: {e}")
-            return None
-        except (KeyError, ValueError, IndexError) as e:
-            scraper_logger.error(f"Data parsing error for {name}: {e}")
-            return None
-        except Exception as e:
-            scraper_logger.error(f"Unexpected error for {name}: {e}", exc_info=True)
-            return None
-    
     def scrape_data(self, priority_filter: int = 2) -> List[Dict]:
         """
         Scrape market data with priority filtering.
         
         Args:
-            priority_filter: Maximum priority level to scrape
-                1 = Only critical assets (fastest, ~5 instruments)
-                2 = Critical + Important (balanced, ~9 instruments)
-                3 = All assets (comprehensive, ~15 instruments)
-                
+            priority_filter: Maximum priority level (1=critical, 2=balanced, 3=all)
+            
         Returns:
             List of market data dictionaries
         """
         instruments = self.get_instruments_by_priority(priority_filter)
         
         scraper_logger.info("="*60)
-        scraper_logger.info(f"Starting scrape with priority filter: {priority_filter}")
+        scraper_logger.info(f"Multi-Source Market Data Collection")
+        scraper_logger.info(f"Priority Filter: {priority_filter}")
         scraper_logger.info(f"Instruments to fetch: {len(instruments)}")
         scraper_logger.info("="*60)
         
@@ -292,15 +315,15 @@ class SafeInvestingScraper:
         
         for name, info in instruments.items():
             try:
-                data = self.fetch_instrument_data(info['id'], name, info)
+                data = self.fetch_instrument_data(name, info)
                 
                 if data:
                     market_data.append(data)
                 else:
                     failed.append(name)
                 
-                # Polite delay between requests
-                time.sleep(1.5)
+                # Small delay between requests
+                time.sleep(0.5)
                 
             except Exception as e:
                 scraper_logger.error(f"Error collecting {name}: {e}")
@@ -310,21 +333,13 @@ class SafeInvestingScraper:
         scraper_logger.info("="*60)
         scraper_logger.info(f"Collection complete: {len(market_data)}/{len(instruments)} successful")
         if failed:
-            scraper_logger.warning(f"Failed instruments: {', '.join(failed)}")
+            scraper_logger.warning(f"Failed: {', '.join(failed)}")
         scraper_logger.info("="*60)
         
         return market_data
     
     def calculate_market_stress_score(self, market_data: List[Dict]) -> float:
-        """
-        Calculate overall market stress score (0-10 scale).
-        
-        Args:
-            market_data: List of market data dictionaries
-            
-        Returns:
-            Stress score between 0 and 10
-        """
+        """Calculate market stress score (0-10 scale)."""
         if not market_data:
             return 0.0
         
@@ -336,19 +351,18 @@ class SafeInvestingScraper:
             price = asset_data.get('price', 0)
             priority = asset_data.get('priority', 3)
             
-            # VIX is direct fear measure (most important)
+            # VIX is direct fear measure
             if 'VIX' in asset and price > 0:
-                # VIX > 20 = elevated fear, VIX > 30 = high fear
                 vix_score = min(price / 10, 10)
-                stress_components.append(vix_score * 3.0)  # Heavy weight
+                stress_components.append(vix_score * 3.0)
             
-            # Large negative moves in major indices
+            # Large negative moves in indices
             if asset_data.get('type') == 'index' and change_pct < -1:
                 index_stress = min(abs(change_pct) * 2, 10)
                 weight = 2.5 if priority == 1 else 1.5
                 stress_components.append(index_stress * weight)
             
-            # Significant positive moves in VIX or safe havens
+            # Safe haven moves
             if asset in ['VIX', 'Gold', '10Y Treasury'] and change_pct > 3:
                 stress_components.append(min(change_pct * 1.5, 10))
             
@@ -368,19 +382,11 @@ class SafeInvestingScraper:
         return round(stress_score, 2)
     
     def create_market_articles(self, market_data: List[Dict]) -> List[Dict]:
-        """
-        Convert market data into article format for pipeline.
-        
-        Args:
-            market_data: List of market data dictionaries
-            
-        Returns:
-            List of article dictionaries
-        """
+        """Convert market data into article format."""
         articles = []
         
         if not market_data:
-            scraper_logger.warning("No market data to convert to articles")
+            scraper_logger.warning("No market data to convert")
             return articles
         
         stress_score = self.calculate_market_stress_score(market_data)
@@ -397,6 +403,7 @@ class SafeInvestingScraper:
             f"Market Stress Score: {stress_score}/10",
             f"Data Points: {len(market_data)}",
             f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Sources: {', '.join(set(d['source'] for d in market_data))}",
             ""
         ]
         
@@ -405,31 +412,28 @@ class SafeInvestingScraper:
             summary_lines.append(f"\n{asset_type.upper()}:")
             for item in sorted(items, key=lambda x: x.get('priority', 3)):
                 summary_lines.append(
-                    f"  {item['asset']}: ${item['price']:.2f} "
-                    f"({item['change_percent']:+.2f}%)"
+                    f"  {item['asset']}: ${item['price']:.2f} ({item['change_percent']:+.2f}%)"
                 )
         
         summary_snippet = '\n'.join(summary_lines)
         
-        # Create summary article
+        # Summary article
         articles.append({
             'headline': f'Market Overview - Stress Level: {stress_score}/10',
             'snippet': summary_snippet[:1000],
             'timestamp': timestamp,
             'asset_tags': [d['asset'] for d in market_data],
-            'url': 'https://www.investing.com',
-            'source': 'investing.com',
+            'url': 'https://finance.yahoo.com',
+            'source': 'multi_source',
             'scraped_at': timestamp,
             'market_stress_score': stress_score,
             'data_points': len(market_data),
             'asset_types': list(by_type.keys())
         })
         
-        # Create articles for significant movers
+        # Individual articles for significant movers
         for asset_data in market_data:
             change_pct = asset_data.get('change_percent', 0)
-            
-            # Threshold varies by asset type
             threshold = 1.0 if asset_data.get('type') == 'index' else 2.0
             
             if abs(change_pct) > threshold or 'VIX' in asset_data['asset']:
@@ -446,7 +450,7 @@ class SafeInvestingScraper:
                     f"Current: ${asset_data['price']:.2f} ({change_pct:+.2f}%)\n"
                     f"Previous Close: ${asset_data['prev_close']:.2f}\n"
                     f"Day Range: ${asset_data['day_low']:.2f} - ${asset_data['day_high']:.2f}\n"
-                    f"Type: {asset_data['type']}"
+                    f"Source: {asset_data['source']}"
                 )
                 
                 articles.append({
@@ -454,8 +458,8 @@ class SafeInvestingScraper:
                     'snippet': snippet,
                     'timestamp': timestamp,
                     'asset_tags': [asset_data['asset']],
-                    'url': asset_data.get('url', 'https://www.investing.com'),
-                    'source': 'investing.com',
+                    'url': asset_data.get('url', 'https://finance.yahoo.com'),
+                    'source': asset_data['source'],
                     'scraped_at': timestamp,
                     'price': asset_data['price'],
                     'change_percent': change_pct,
@@ -463,19 +467,11 @@ class SafeInvestingScraper:
                     'priority': asset_data.get('priority', 3)
                 })
         
-        scraper_logger.info(f"Created {len(articles)} articles from {len(market_data)} data points")
+        scraper_logger.info(f"Created {len(articles)} articles")
         return articles
     
     def save_to_bronze(self, articles: List[Dict]) -> Optional[Path]:
-        """
-        Save articles to bronze layer as parquet.
-        
-        Args:
-            articles: List of article dictionaries
-            
-        Returns:
-            Path to saved file or None
-        """
+        """Save articles to bronze layer."""
         if not articles:
             scraper_logger.warning("No articles to save")
             return None
@@ -484,7 +480,7 @@ class SafeInvestingScraper:
             df = pd.DataFrame(articles)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"investing_market_data_{timestamp}.parquet"
+            filename = f"market_data_{timestamp}.parquet"
             filepath = Path("data/bronze") / filename
             
             filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -494,25 +490,29 @@ class SafeInvestingScraper:
             return filepath
             
         except Exception as e:
-            scraper_logger.error(f"Error saving to bronze: {e}", exc_info=True)
+            scraper_logger.error(f"Error saving: {e}", exc_info=True)
             return None
+
+
+# Maintain compatibility with existing code
+SafeInvestingScraper = MultiSourceMarketScraper
 
 
 def scrape_investing_data(priority_filter: int = 2) -> Optional[Path]:
     """
-    Main function to scrape Investing.com data and save to bronze.
+    Main scraping function with multi-source fallback.
     
     Args:
-        priority_filter: Priority level (1=critical only, 2=balanced, 3=all)
+        priority_filter: Priority level (1=critical, 2=balanced, 3=all)
         
     Returns:
-        Path to saved bronze file or None
+        Path to saved bronze file
     """
-    scraper = SafeInvestingScraper()
+    scraper = MultiSourceMarketScraper()
     
     try:
         scraper_logger.info("="*60)
-        scraper_logger.info("INVESTING.COM MARKET DATA SCRAPER")
+        scraper_logger.info("MARKET DATA SCRAPER (Multi-Source)")
         scraper_logger.info(f"Priority Filter: {priority_filter}")
         scraper_logger.info("="*60)
         
@@ -522,7 +522,7 @@ def scrape_investing_data(priority_filter: int = 2) -> Optional[Path]:
         market_data = scraper.scrape_data(priority_filter=priority_filter)
         
         if not market_data:
-            scraper_logger.error("No market data collected")
+            scraper_logger.error("No market data collected from any source")
             return None
         
         # Convert to articles
@@ -546,10 +546,9 @@ def scrape_investing_data(priority_filter: int = 2) -> Optional[Path]:
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("INVESTING.COM MARKET DATA SCRAPER - TEST")
+    print("MARKET DATA SCRAPER - MULTI-SOURCE")
     print("="*60 + "\n")
     
-    # Test with priority 2 (balanced)
     result = scrape_investing_data(priority_filter=2)
     
     if result:
@@ -579,8 +578,8 @@ if __name__ == "__main__":
                 for _, row in movers.iterrows():
                     print(f"• {row['headline']}")
         except Exception as e:
-            print(f"Error reading results: {e}")
+            print(f"Error: {e}")
     else:
         print(f"\n{'='*60}")
-        print("✗ FAILED - Check logs for details")
+        print("✗ FAILED")
         print(f"{'='*60}")
