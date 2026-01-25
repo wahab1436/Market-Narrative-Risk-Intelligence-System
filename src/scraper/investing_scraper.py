@@ -1,12 +1,6 @@
 """
-Real Market Data Scraper - MULTI-SOURCE WORKING VERSION
-Uses multiple FREE APIs that actually work (no scraping needed)
-- Yahoo Finance (yfinance library - most reliable)
-- Alpha Vantage (free API key)
-- CoinGecko (crypto data)
-- FRED (Federal Reserve Economic Data)
-
-NO Cloudflare issues, NO 403 errors, 100% reliable
+Market Data Scraper - SAFE IMPORT VERSION
+Handles missing yfinance gracefully
 """
 import time
 import random
@@ -14,9 +8,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import pandas as pd
+import json
 import requests
-import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 
 try:
     from src.utils.logger import scraper_logger
@@ -25,239 +19,173 @@ except ImportError:
     scraper_logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO)
 
+# Safe import for yfinance
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    YFINANCE_AVAILABLE = False
+    scraper_logger.warning("yfinance not available - using alternative method")
 
-class MultiSourceMarketScraper:
+
+class SafeInvestingScraper:
     """
-    Production-ready market data collector using multiple FREE APIs.
-    No scraping, no Cloudflare issues, 100% reliable.
+    Multi-source API scraper for real market data.
+    Falls back to direct Yahoo Finance API if yfinance unavailable.
     """
     
-    # Comprehensive instrument mapping
-    INSTRUMENTS = {
-        # US Indices
+    # Yahoo Finance symbol mapping
+    YAHOO_SYMBOLS = {
+        # Major US Indices
         'S&P 500': {
-            'yahoo': '^GSPC',
+            'symbol': '^GSPC',
             'type': 'index',
             'priority': 1,
-            'description': 'S&P 500 Index'
         },
         'Dow Jones': {
-            'yahoo': '^DJI',
+            'symbol': '^DJI',
             'type': 'index',
             'priority': 1,
-            'description': 'Dow Jones Industrial Average'
         },
         'NASDAQ': {
-            'yahoo': '^IXIC',
+            'symbol': '^IXIC',
             'type': 'index',
             'priority': 1,
-            'description': 'NASDAQ Composite'
         },
         'VIX': {
-            'yahoo': '^VIX',
+            'symbol': '^VIX',
             'type': 'volatility',
             'priority': 1,
-            'description': 'CBOE Volatility Index'
         },
         'Russell 2000': {
-            'yahoo': '^RUT',
+            'symbol': '^RUT',
             'type': 'index',
             'priority': 2,
-            'description': 'Russell 2000 Small Cap'
         },
         
         # International Indices
         'FTSE 100': {
-            'yahoo': '^FTSE',
+            'symbol': '^FTSE',
             'type': 'index',
             'priority': 2,
-            'description': 'UK FTSE 100'
         },
         'DAX': {
-            'yahoo': '^GDAXI',
+            'symbol': '^GDAXI',
             'type': 'index',
             'priority': 2,
-            'description': 'Germany DAX'
         },
         'Nikkei 225': {
-            'yahoo': '^N225',
+            'symbol': '^N225',
             'type': 'index',
             'priority': 2,
-            'description': 'Japan Nikkei 225'
-        },
-        'CAC 40': {
-            'yahoo': '^FCHI',
-            'type': 'index',
-            'priority': 3,
-            'description': 'France CAC 40'
-        },
-        'Hang Seng': {
-            'yahoo': '^HSI',
-            'type': 'index',
-            'priority': 3,
-            'description': 'Hong Kong Hang Seng'
         },
         
         # Commodities
         'Gold': {
-            'yahoo': 'GC=F',
+            'symbol': 'GC=F',
             'type': 'commodity',
             'priority': 1,
-            'description': 'Gold Futures'
-        },
-        'Silver': {
-            'yahoo': 'SI=F',
-            'type': 'commodity',
-            'priority': 2,
-            'description': 'Silver Futures'
         },
         'Crude Oil': {
-            'yahoo': 'CL=F',
+            'symbol': 'CL=F',
             'type': 'commodity',
             'priority': 1,
-            'description': 'Crude Oil WTI Futures'
         },
-        'Natural Gas': {
-            'yahoo': 'NG=F',
+        'Silver': {
+            'symbol': 'SI=F',
             'type': 'commodity',
             'priority': 2,
-            'description': 'Natural Gas Futures'
         },
-        'Copper': {
-            'yahoo': 'HG=F',
+        'Natural Gas': {
+            'symbol': 'NG=F',
             'type': 'commodity',
-            'priority': 3,
-            'description': 'Copper Futures'
+            'priority': 2,
         },
         
         # Forex
         'EUR/USD': {
-            'yahoo': 'EURUSD=X',
+            'symbol': 'EURUSD=X',
             'type': 'forex',
             'priority': 1,
-            'description': 'Euro vs US Dollar'
         },
         'GBP/USD': {
-            'yahoo': 'GBPUSD=X',
+            'symbol': 'GBPUSD=X',
             'type': 'forex',
             'priority': 2,
-            'description': 'British Pound vs US Dollar'
         },
         'USD/JPY': {
-            'yahoo': 'JPY=X',
+            'symbol': 'JPY=X',
             'type': 'forex',
             'priority': 2,
-            'description': 'US Dollar vs Japanese Yen'
-        },
-        'USD/CHF': {
-            'yahoo': 'CHF=X',
-            'type': 'forex',
-            'priority': 3,
-            'description': 'US Dollar vs Swiss Franc'
-        },
-        'AUD/USD': {
-            'yahoo': 'AUDUSD=X',
-            'type': 'forex',
-            'priority': 3,
-            'description': 'Australian Dollar vs US Dollar'
         },
         
-        # Cryptocurrencies (using CoinGecko as backup)
+        # Cryptocurrencies
         'Bitcoin': {
-            'yahoo': 'BTC-USD',
-            'coingecko': 'bitcoin',
+            'symbol': 'BTC-USD',
             'type': 'crypto',
             'priority': 1,
-            'description': 'Bitcoin'
         },
         'Ethereum': {
-            'yahoo': 'ETH-USD',
-            'coingecko': 'ethereum',
+            'symbol': 'ETH-USD',
             'type': 'crypto',
             'priority': 2,
-            'description': 'Ethereum'
-        },
-        
-        # US Treasury Bonds
-        'US 10Y Bond': {
-            'yahoo': '^TNX',
-            'type': 'bond',
-            'priority': 1,
-            'description': 'US 10-Year Treasury Yield'
-        },
-        'US 2Y Bond': {
-            'yahoo': '^IRX',
-            'type': 'bond',
-            'priority': 2,
-            'description': 'US 2-Year Treasury Yield'
         },
     }
     
-    def __init__(self, delay_range: Tuple[float, float] = (0.3, 0.8)):
-        """Initialize multi-source scraper."""
+    USER_AGENTS = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+    ]
+    
+    def __init__(self, delay_range: Tuple[float, float] = (0.5, 1.5), max_retries: int = 3):
+        """Initialize scraper with fallback support."""
         self.delay_range = delay_range
+        self.max_retries = max_retries
         self.request_count = 0
         self.failed_count = 0
-        self.success_count = 0
         self.yahoo_success = 0
-        self.coingecko_success = 0
         
-        scraper_logger.info(f"Initialized MultiSourceMarketScraper")
-        scraper_logger.info(f"Instruments: {len(self.INSTRUMENTS)}")
-        scraper_logger.info(f"Sources: Yahoo Finance (yfinance), CoinGecko API")
+        scraper_logger.info(f"Initialized SafeInvestingScraper with {len(self.YAHOO_SYMBOLS)} instruments")
+        
+        if YFINANCE_AVAILABLE:
+            scraper_logger.info("Using yfinance library (preferred)")
+        else:
+            scraper_logger.warning("Using Yahoo Finance Chart API (fallback)")
     
     def _respectful_delay(self):
-        """Small delay between requests."""
+        """Wait between requests."""
         delay = random.uniform(self.delay_range[0], self.delay_range[1])
         time.sleep(delay)
     
-    def _fetch_yahoo_finance(self, name: str, config: Dict) -> Optional[Dict]:
+    def _fetch_yahoo_yfinance(self, name: str, info: Dict) -> Optional[Dict]:
         """
-        Fetch data using yfinance library (most reliable method).
-        
-        Args:
-            name: Instrument name
-            config: Configuration dict with 'yahoo' symbol
-            
-        Returns:
-            Market data dict or None
+        Fetch using yfinance library (preferred method).
         """
-        if 'yahoo' not in config:
+        if not YFINANCE_AVAILABLE:
             return None
         
-        symbol = config['yahoo']
+        if name not in self.YAHOO_SYMBOLS:
+            return None
+        
+        symbol = self.YAHOO_SYMBOLS[name]['symbol']
         
         try:
-            # Create ticker object
             ticker = yf.Ticker(symbol)
-            
-            # Get current info
-            info = ticker.info
-            
-            # Get recent history for change calculation
             hist = ticker.history(period='5d')
             
             if hist.empty or len(hist) < 2:
                 scraper_logger.warning(f"Insufficient data for {name}")
                 return None
             
-            # Current and previous close
             current_price = hist['Close'].iloc[-1]
             prev_close = hist['Close'].iloc[-2]
-            
-            # Calculate changes
             change = current_price - prev_close
             change_percent = (change / prev_close * 100) if prev_close != 0 else 0
             
-            # Get day range
-            day_high = hist['High'].iloc[-1]
-            day_low = hist['Low'].iloc[-1]
-            
             self.yahoo_success += 1
-            self.success_count += 1
             
             scraper_logger.info(
-                f"✓ Yahoo: {name} = ${current_price:.2f} "
+                f"✓ Yahoo (yfinance): {name} = ${current_price:.2f} "
                 f"({change_percent:+.2f}%)"
             )
             
@@ -266,194 +194,162 @@ class MultiSourceMarketScraper:
                 'change': float(change),
                 'change_percent': float(change_percent),
                 'prev_close': float(prev_close),
-                'day_high': float(day_high),
-                'day_low': float(day_low),
-                'volume': float(hist['Volume'].iloc[-1]) if 'Volume' in hist else None,
+                'day_high': float(hist['High'].iloc[-1]),
+                'day_low': float(hist['Low'].iloc[-1]),
                 'source': 'yahoo_finance'
             }
             
         except Exception as e:
-            scraper_logger.warning(f"Yahoo error for {name}: {e}")
+            scraper_logger.warning(f"yfinance error for {name}: {e}")
             return None
     
-    def _fetch_coingecko(self, name: str, config: Dict) -> Optional[Dict]:
+    def _fetch_yahoo_api(self, name: str, info: Dict) -> Optional[Dict]:
         """
-        Fetch crypto data from CoinGecko API (FREE, no key needed).
-        
-        Args:
-            name: Crypto name
-            config: Configuration with 'coingecko' id
-            
-        Returns:
-            Market data dict or None
+        Fetch using Yahoo Finance Chart API directly (fallback).
         """
-        if 'coingecko' not in config:
+        if name not in self.YAHOO_SYMBOLS:
             return None
         
-        coin_id = config['coingecko']
+        symbol = self.YAHOO_SYMBOLS[name]['symbol']
         
         try:
-            url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
             params = {
-                'localization': 'false',
-                'tickers': 'false',
-                'community_data': 'false',
-                'developer_data': 'false'
+                'interval': '1d',
+                'range': '5d',
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            headers = {
+                'User-Agent': random.choice(self.USER_AGENTS),
+                'Accept': 'application/json',
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=15)
             
             if response.status_code != 200:
-                scraper_logger.warning(f"CoinGecko HTTP {response.status_code} for {name}")
+                scraper_logger.warning(f"Yahoo API HTTP {response.status_code} for {name}")
                 return None
             
             data = response.json()
-            market_data = data.get('market_data', {})
             
-            current_price = market_data.get('current_price', {}).get('usd')
-            change_24h = market_data.get('price_change_percentage_24h')
-            
-            if not current_price:
+            if 'chart' not in data or 'result' not in data['chart']:
                 return None
             
-            prev_close = current_price / (1 + change_24h / 100) if change_24h else current_price
-            change = current_price - prev_close
+            result = data['chart']['result'][0]
+            meta = result.get('meta', {})
             
-            self.coingecko_success += 1
-            self.success_count += 1
+            current_price = meta.get('regularMarketPrice')
+            prev_close = meta.get('chartPreviousClose') or meta.get('previousClose')
+            
+            if current_price is None:
+                return None
+            
+            if prev_close is None:
+                quotes = result.get('indicators', {}).get('quote', [{}])[0]
+                closes = quotes.get('close', [])
+                if closes and len(closes) >= 2:
+                    prev_close = closes[-2] if closes[-2] is not None else closes[-1]
+                else:
+                    prev_close = current_price
+            
+            change = current_price - prev_close
+            change_percent = (change / prev_close * 100) if prev_close != 0 else 0
+            
+            self.yahoo_success += 1
             
             scraper_logger.info(
-                f"✓ CoinGecko: {name} = ${current_price:.2f} "
-                f"({change_24h:+.2f}%)"
+                f"✓ Yahoo (API): {name} = ${current_price:.2f} "
+                f"({change_percent:+.2f}%)"
             )
             
             return {
                 'price': float(current_price),
                 'change': float(change),
-                'change_percent': float(change_24h) if change_24h else 0.0,
+                'change_percent': float(change_percent),
                 'prev_close': float(prev_close),
-                'day_high': float(market_data.get('high_24h', {}).get('usd', current_price)),
-                'day_low': float(market_data.get('low_24h', {}).get('usd', current_price)),
-                'volume': float(market_data.get('total_volume', {}).get('usd', 0)),
-                'source': 'coingecko'
+                'day_high': float(meta.get('regularMarketDayHigh', current_price)),
+                'day_low': float(meta.get('regularMarketDayLow', current_price)),
+                'source': 'yahoo_finance_api'
             }
             
         except Exception as e:
-            scraper_logger.warning(f"CoinGecko error for {name}: {e}")
+            scraper_logger.warning(f"Yahoo API error for {name}: {e}")
             return None
     
-    def fetch_instrument(self, name: str, config: Dict) -> Optional[Dict]:
+    def scrape_instrument(self, name: str, info: Dict) -> Optional[Dict]:
         """
-        Fetch data for a single instrument (tries multiple sources).
-        
-        Args:
-            name: Instrument name
-            config: Instrument configuration
-            
-        Returns:
-            Complete market data dict or None
+        Scrape data for a single instrument.
+        Tries yfinance first, falls back to direct API.
         """
-        scraper_logger.info(f"Fetching: {name} ({config['type']})")
+        scraper_logger.info(f"Fetching: {name} ({info['type']})")
         
-        # Try Yahoo Finance first (most reliable)
-        price_data = self._fetch_yahoo_finance(name, config)
+        # Try yfinance first if available
+        if YFINANCE_AVAILABLE:
+            price_data = self._fetch_yahoo_yfinance(name, info)
+        else:
+            price_data = None
         
-        # Fallback to CoinGecko for crypto
-        if not price_data and config['type'] == 'crypto':
-            price_data = self._fetch_coingecko(name, config)
+        # Fallback to direct API
+        if not price_data:
+            price_data = self._fetch_yahoo_api(name, info)
         
         if not price_data:
-            scraper_logger.error(f"❌ Failed: {name}")
+            scraper_logger.error(f"❌ Failed to get data for {name}")
             self.failed_count += 1
             return None
         
-        # Build complete result
+        # Build result
         result = {
             'asset': name,
-            'asset_type': config['type'],
-            'priority': config.get('priority', 3),
-            'description': config.get('description', name),
+            'asset_type': info['type'],  # ✅ Correct column name
+            'priority': info.get('priority', 3),
             'timestamp': datetime.now().isoformat(),
             'source': price_data['source'],
             'price': price_data['price'],
             'change': price_data['change'],
             'change_percent': price_data['change_percent'],
             'prev_close': price_data['prev_close'],
-            'day_high': price_data.get('day_high'),
             'day_low': price_data.get('day_low'),
-            'volume': price_data.get('volume'),
+            'day_high': price_data.get('day_high'),
         }
         
         self.request_count += 1
         
         return result
     
-    def fetch_all(self, priority_filter: Optional[int] = None, 
-                  use_threading: bool = True) -> List[Dict]:
-        """
-        Fetch all instruments (optionally with threading for speed).
-        
-        Args:
-            priority_filter: Only fetch priority <= this value
-            use_threading: Use ThreadPool for parallel fetching
-            
-        Returns:
-            List of market data dicts
-        """
+    def scrape_all(self, priority_filter: Optional[int] = None) -> List[Dict]:
+        """Fetch all instruments."""
         scraper_logger.info("="*70)
         scraper_logger.info("STARTING REAL MARKET DATA COLLECTION")
         scraper_logger.info("="*70)
-        scraper_logger.info("Sources: Yahoo Finance, CoinGecko")
-        scraper_logger.info("Method: Official APIs (NO scraping)")
+        scraper_logger.info("Source: Yahoo Finance")
         scraper_logger.info("="*70)
         
         # Filter by priority
-        instruments = self.INSTRUMENTS
+        instruments = {
+            name: info for name, info in self.YAHOO_SYMBOLS.items()
+        }
+        
         if priority_filter:
             instruments = {
-                name: config for name, config in self.INSTRUMENTS.items()
-                if config.get('priority', 3) <= priority_filter
+                name: info for name, info in instruments.items()
+                if info.get('priority', 3) <= priority_filter
             }
             scraper_logger.info(f"Priority filter <= {priority_filter}: {len(instruments)} instruments")
         
         market_data = []
         start_time = time.time()
         
-        if use_threading:
-            # Parallel fetching (faster)
-            scraper_logger.info("Using parallel fetching (ThreadPool)")
+        for i, (name, info) in enumerate(instruments.items(), 1):
+            scraper_logger.info(f"\n[{i}/{len(instruments)}] Processing: {name}")
             
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {
-                    executor.submit(self.fetch_instrument, name, config): name
-                    for name, config in instruments.items()
-                }
-                
-                for i, future in enumerate(as_completed(futures), 1):
-                    name = futures[future]
-                    try:
-                        data = future.result()
-                        if data:
-                            market_data.append(data)
-                        
-                        scraper_logger.info(f"[{i}/{len(instruments)}] Processed: {name}")
-                        
-                    except Exception as e:
-                        scraper_logger.error(f"Error processing {name}: {e}")
-                        self.failed_count += 1
-        else:
-            # Sequential fetching
-            for i, (name, config) in enumerate(instruments.items(), 1):
-                scraper_logger.info(f"\n[{i}/{len(instruments)}] Processing: {name}")
-                
-                data = self.fetch_instrument(name, config)
-                
-                if data:
-                    market_data.append(data)
-                
-                # Small delay between requests
-                if i < len(instruments):
-                    self._respectful_delay()
+            data = self.scrape_instrument(name, info)
+            
+            if data:
+                market_data.append(data)
+            
+            if i < len(instruments):
+                self._respectful_delay()
         
         elapsed = time.time() - start_time
         success_rate = (len(market_data) / len(instruments) * 100) if instruments else 0
@@ -463,16 +359,14 @@ class MultiSourceMarketScraper:
         scraper_logger.info("="*70)
         scraper_logger.info(f"Success: {len(market_data)}/{len(instruments)} ({success_rate:.1f}%)")
         scraper_logger.info(f"Yahoo Finance: {self.yahoo_success}")
-        scraper_logger.info(f"CoinGecko: {self.coingecko_success}")
         scraper_logger.info(f"Failed: {self.failed_count}")
         scraper_logger.info(f"Time elapsed: {elapsed:.1f}s")
-        scraper_logger.info(f"Avg per instrument: {elapsed/len(instruments):.2f}s")
         scraper_logger.info("="*70)
         
         return market_data
     
     def calculate_market_stress(self, market_data: List[Dict]) -> float:
-        """Calculate market stress score from real data."""
+        """Calculate market stress score."""
         if not market_data:
             return 0.0
         
@@ -484,17 +378,14 @@ class MultiSourceMarketScraper:
             price = data.get('price', 0)
             priority = data.get('priority', 3)
             
-            # VIX is direct fear gauge
             if 'VIX' in asset:
                 vix_stress = min(price / 10, 10)
                 stress_factors.append(vix_stress * 3.0)
             
-            # Large moves create stress
             move_stress = min(abs(change_pct) / 2, 10)
             weight = (4 - priority)
             stress_factors.append(move_stress * weight)
             
-            # Extreme negative moves
             if change_pct < -3:
                 stress_factors.append(min(abs(change_pct), 10) * 1.5)
         
@@ -505,7 +396,7 @@ class MultiSourceMarketScraper:
         return 0.0
     
     def create_articles(self, market_data: List[Dict]) -> List[Dict]:
-        """Convert market data to article format for pipeline."""
+        """Convert market data to article format."""
         if not market_data:
             scraper_logger.warning("No market data to convert")
             return []
@@ -518,7 +409,7 @@ class MultiSourceMarketScraper:
         overview_lines = [
             f"Market Stress Score: {stress_score:.1f}/10",
             f"Real Data Points: {len(market_data)}",
-            f"Sources: Yahoo Finance, CoinGecko",
+            f"Source: Yahoo Finance",
             f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
         ]
@@ -553,14 +444,13 @@ class MultiSourceMarketScraper:
             'timestamp': timestamp,
             'asset_tags': [d['asset'] for d in market_data],
             'url': 'https://finance.yahoo.com',
-            'source': 'multi_source_api',
+            'source': 'yahoo_finance',
             'scraped_at': timestamp,
             'market_stress_score': stress_score,
             'data_points': len(market_data),
             'asset_types': list(by_type.keys()),
             'scraper_stats': {
                 'yahoo_success': self.yahoo_success,
-                'coingecko_success': self.coingecko_success,
                 'failures': self.failed_count,
                 'success_rate': f"{(len(market_data)/(len(market_data)+self.failed_count)*100):.1f}%" if market_data else "0%"
             }
@@ -602,8 +492,8 @@ class MultiSourceMarketScraper:
                     'snippet': snippet,
                     'timestamp': timestamp,
                     'asset_tags': [data['asset']],
-                    'url': f"https://finance.yahoo.com/quote/{data.get('yahoo', data['asset'])}",
-                    'source': data['source'],
+                    'url': f"https://finance.yahoo.com",
+                    'source': 'yahoo_finance',
                     'scraped_at': timestamp,
                     'price': data['price'],
                     'change': data['change'],
@@ -616,7 +506,7 @@ class MultiSourceMarketScraper:
         return articles
     
     def save_to_bronze(self, articles: List[Dict]) -> Optional[Path]:
-        """Save articles to bronze layer."""
+        """Save to bronze layer."""
         if not articles:
             scraper_logger.error("No articles to save")
             return None
@@ -635,31 +525,19 @@ class MultiSourceMarketScraper:
         return filepath
 
 
-def scrape_investing_data(priority_filter: Optional[int] = None, use_threading: bool = True):
-    """
-    Main function - REAL DATA from multiple FREE APIs.
-    
-    Args:
-        priority_filter: Only fetch priority <= this (1, 2, or 3)
-        use_threading: Use parallel fetching for speed
-        
-    Returns:
-        Path to saved bronze file
-    """
-    scraper = MultiSourceMarketScraper(delay_range=(0.3, 0.8))
+def scrape_investing_data(priority_filter: Optional[int] = None):
+    """Main scraping function."""
+    scraper = SafeInvestingScraper(delay_range=(0.5, 1.5), max_retries=3)
     
     try:
-        market_data = scraper.fetch_all(
-            priority_filter=priority_filter,
-            use_threading=use_threading
-        )
+        market_data = scraper.scrape_all(priority_filter=priority_filter)
         
         if market_data:
             articles = scraper.create_articles(market_data)
             filepath = scraper.save_to_bronze(articles)
             return filepath
         else:
-            scraper_logger.error("NO MARKET DATA COLLECTED")
+            scraper_logger.error("NO REAL MARKET DATA COLLECTED")
             return None
             
     except KeyboardInterrupt:
@@ -671,45 +549,11 @@ def scrape_investing_data(priority_filter: Optional[int] = None, use_threading: 
 
 
 if __name__ == "__main__":
-    print("\n" + "="*70)
-    print("REAL MARKET DATA COLLECTOR - MULTI-SOURCE")
-    print("="*70)
-    print("Sources: Yahoo Finance (yfinance), CoinGecko")
-    print("Method: Official FREE APIs (NO scraping, NO Cloudflare)")
-    print("\nPriority levels:")
-    print("  1 = Critical (S&P, VIX, Gold, BTC) - FASTEST")
-    print("  2 = Critical + Important - BALANCED")
-    print("  3 = All assets - COMPREHENSIVE")
-    print("\n" + "="*70 + "\n")
-    
-    result = scrape_investing_data(priority_filter=2, use_threading=True)
+    result = scrape_investing_data(priority_filter=2)
     
     if result:
-        print(f"\n{'='*70}")
-        print("✓ REAL DATA COLLECTED!")
-        print(f"{'='*70}")
-        print(f"\nData saved to: {result}")
-        
+        print(f"\n✓ Data saved to: {result}")
         df = pd.read_parquet(result)
-        print(f"\nData points: {len(df)}")
-        
-        if len(df) > 0:
-            print(f"\n{'='*70}")
-            print("MARKET SUMMARY")
-            print(f"{'='*70}\n")
-            
-            overview = df[df['headline'].str.contains('Overview', na=False)]
-            if not overview.empty:
-                print(overview.iloc[0]['snippet'][:500])
-            
-            print(f"\n{'='*70}")
-            print("TOP MOVERS")
-            print(f"{'='*70}\n")
-            
-            movers = df[~df['headline'].str.contains('Overview', na=False)].head(10)
-            for idx, row in movers.iterrows():
-                print(f"  • {row['headline']}")
+        print(f"Data points: {len(df)}")
     else:
-        print(f"\n{'='*70}")
-        print("❌ DATA COLLECTION FAILED")
-        print(f"{'='*70}")
+        print("\n❌ Collection failed")
