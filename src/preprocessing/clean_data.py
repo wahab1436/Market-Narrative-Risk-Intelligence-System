@@ -1,6 +1,6 @@
 """
 Data cleaning and validation module.
-FIXED: Better validation rules for market data from Investing.com
+FINAL FIXED VERSION - All column name issues resolved
 """
 import pandas as pd
 import numpy as np
@@ -16,7 +16,7 @@ from src.utils.config_loader import config_loader
 class DataCleaner:
     """
     Clean and validate raw scraped data.
-    Handles both news articles and market data from Investing.com.
+    Handles both news articles and market data.
     """
     
     def __init__(self):
@@ -93,7 +93,7 @@ class DataCleaner:
         # Check source
         has_investing_source = False
         if 'source' in df.columns:
-            has_investing_source = df['source'].str.contains('investing.com', na=False).any()
+            has_investing_source = df['source'].str.contains('investing.com|yahoo_finance', na=False).any()
         
         if has_market_cols or has_investing_source:
             preprocessing_logger.info("[preprocessing] Detected data type: MARKET DATA")
@@ -104,7 +104,7 @@ class DataCleaner:
     
     def validate_market_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Validate market data from Investing.com.
+        Validate market data.
         Market data has different validation rules than news articles.
         
         Args:
@@ -118,7 +118,7 @@ class DataCleaner:
         # Required fields for market data
         if 'headline' in df.columns:
             masks['missing_headline'] = df['headline'].isna() | (df['headline'] == '')
-            # Market headlines can be shorter (e.g., "S&P 500 rises 2%")
+            # Market headlines can be shorter
             masks['short_headline'] = df['headline'].str.len() < 10
         
         if 'timestamp' in df.columns:
@@ -205,6 +205,7 @@ class DataCleaner:
     def enrich_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add derived fields to market data for feature engineering.
+        FIXED: Safe handling of all column name variations.
         
         Args:
             df: Market data DataFrame
@@ -215,7 +216,7 @@ class DataCleaner:
         df = df.copy()
         
         # Create snippet from headline if missing
-        if 'snippet' not in df.columns or df['snippet'].isna().all():#
+        if 'snippet' not in df.columns or df['snippet'].isna().all():
             df['snippet'] = df['headline']
         
         # Add market context to snippet
@@ -225,15 +226,34 @@ class DataCleaner:
                 axis=1
             )
         
-        # Extract asset tags from headline if missing
+        # Extract asset tags - SAFE VERSION
         if 'asset_tags' not in df.columns:
-            df['asset_tags'] = df['asset'].apply(lambda x: [x] if pd.notna(x) else [])
+            if 'asset' in df.columns:
+                df['asset_tags'] = df['asset'].apply(lambda x: [x] if pd.notna(x) else [])
+            else:
+                # Fallback: extract from headline
+                df['asset_tags'] = df['headline'].apply(
+                    lambda x: [] if pd.isna(x) else [x.split()[0]] if len(x.split()) > 0 else []
+                )
         
-        # Ensure market_tags exists
+        # Ensure market_tags exists - COMPLETELY SAFE VERSION
         if 'market_tags' not in df.columns:
-            df['market_tags'] = df['asset_type'].apply(
-                lambda x: [x] if pd.notna(x) else []
-            )
+            # Try multiple column name variations
+            type_col = None
+            
+            if 'asset_type' in df.columns:
+                type_col = 'asset_type'
+            elif 'type' in df.columns:
+                type_col = 'type'
+            
+            if type_col:
+                df['market_tags'] = df[type_col].apply(
+                    lambda x: [x] if pd.notna(x) else []
+                )
+            else:
+                # Ultimate fallback: empty list
+                df['market_tags'] = [[] for _ in range(len(df))]
+                preprocessing_logger.warning("[preprocessing] Neither 'asset_type' nor 'type' column found, using empty market_tags")
         
         return df
     
@@ -267,7 +287,7 @@ class DataCleaner:
         if data_type == 'market':
             df = self.enrich_market_data(df)
         
-        # Handle categorical columns
+        # Handle categorical columns - SAFE VERSION
         cat_cols = self.processing_config.get('categorical_columns', ['asset_tags', 'market_tags'])
         for col in cat_cols:
             if col in df.columns:
