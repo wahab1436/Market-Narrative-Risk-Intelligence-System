@@ -86,9 +86,9 @@ class SafeInvestingScraper:
             "Ethereum": {"url": "/crypto/ethereum/usd", "type": "crypto", "priority": 2},
         }
         
-        # FIX: Use string formatting instead of multiple arguments
+        # Use string formatting instead of multiple arguments
         scraper_logger.info(
-            f"SafeInvestingScraper initialised – {len(self.instruments)} instruments (delay {self.delay_range[0]}s‑{self.delay_range[1]}s, retries {self.max_retries})"
+            f"SafeInvestingScraper initialized – {len(self.instruments)} instruments (delay {self.delay_range[0]}s-{self.delay_range[1]}s, retries {self.max_retries})"
         )
         self._warm_up_session()
 
@@ -261,7 +261,6 @@ class SafeInvestingScraper:
                 "day_low": price_data.get("day_low"),
                 "day_high": price_data.get("day_high"),
             }
-            # FIX: Use string formatting
             scraper_logger.info(
                 f"✓ {name}: ${result['price']:.2f} ({result['change_percent']:+.2f}%) change ${result['change']:+.2f}"
             )
@@ -280,7 +279,6 @@ class SafeInvestingScraper:
                 for n, i in self.instruments.items()
                 if i.get("priority", 3) <= priority_filter
             }
-            # FIX: Use string formatting
             scraper_logger.info(
                 f"Filtering to priority ≤ {priority_filter} → {len(instruments)} instruments"
             )
@@ -289,7 +287,6 @@ class SafeInvestingScraper:
         start = time.time()
         collected: List[Dict] = []
         for idx, (name, info) in enumerate(instruments.items(), start=1):
-            # FIX: Use string formatting
             scraper_logger.info(f"\n[{idx}/{len(instruments)}] {name}")
             data = self.scrape_instrument(name, info)
             if data:
@@ -301,7 +298,6 @@ class SafeInvestingScraper:
         scraper_logger.info("\n" + "=" * 70)
         scraper_logger.info("SCRAPING COMPLETE")
         scraper_logger.info("=" * 70)
-        # FIX: Use string formatting
         scraper_logger.info(
             f"Success: {len(collected)} / {len(instruments)} ({success_pct:.1f}%)"
         )
