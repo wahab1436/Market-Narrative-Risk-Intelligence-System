@@ -59,7 +59,7 @@ except ImportError as e:
 
 # Import pipeline components
 try:
-    from src.scraper import scrape_and_save
+    from src.scraper import YahooFinanceScraper, scrape_yahoo_finance_data
     from src.preprocessing.clean_data import clean_and_save
     from src.preprocessing.feature_engineering import engineer_and_save
     PIPELINE_AVAILABLE = True
