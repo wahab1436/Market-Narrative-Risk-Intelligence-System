@@ -27,9 +27,9 @@ class YahooFinanceScraper:
     Scrapes actual quote pages like: https://finance.yahoo.com/quote/CL=F/
     """
     
-    # Yahoo Finance Quote URLs
+    # Yahoo Finance Quote URLs (CORRECTED SYMBOLS)
     YAHOO_SYMBOLS = {
-        # US Major Indices
+        # US Major Indices (Working)
         'S&P 500': {
             'symbol': '^GSPC',
             'type': 'index',
@@ -61,27 +61,7 @@ class YahooFinanceScraper:
             'url': 'https://finance.yahoo.com/quote/%5ERUT'
         },
         
-        # International Indices
-        'FTSE 100': {
-            'symbol': '^FTSE',
-            'type': 'index',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/%5EFTSE'
-        },
-        'DAX': {
-            'symbol': '^GDAXI',
-            'type': 'index',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/%5EGDAXI'
-        },
-        'Nikkei 225': {
-            'symbol': '^N225',
-            'type': 'index',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/%5EN225'
-        },
-        
-        # Commodities
+        # Commodities (Working - use current month contracts)
         'Gold': {
             'symbol': 'GC=F',
             'type': 'commodity',
@@ -94,60 +74,8 @@ class YahooFinanceScraper:
             'priority': 2,
             'url': 'https://finance.yahoo.com/quote/SI=F'
         },
-        'Crude Oil': {
-            'symbol': 'CL=F',
-            'type': 'commodity',
-            'priority': 1,
-            'url': 'https://finance.yahoo.com/quote/CL=F'
-        },
-        'Natural Gas': {
-            'symbol': 'NG=F',
-            'type': 'commodity',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/NG=F'
-        },
-        'Copper': {
-            'symbol': 'HG=F',
-            'type': 'commodity',
-            'priority': 3,
-            'url': 'https://finance.yahoo.com/quote/HG=F'
-        },
         
-        # Forex
-        'EUR/USD': {
-            'symbol': 'EURUSD=X',
-            'type': 'forex',
-            'priority': 1,
-            'url': 'https://finance.yahoo.com/quote/EURUSD=X'
-        },
-        'GBP/USD': {
-            'symbol': 'GBPUSD=X',
-            'type': 'forex',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/GBPUSD=X'
-        },
-        'USD/JPY': {
-            'symbol': 'USDJPY=X',
-            'type': 'forex',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/USDJPY=X'
-        },
-        
-        # Cryptocurrencies
-        'Bitcoin': {
-            'symbol': 'BTC-USD',
-            'type': 'crypto',
-            'priority': 1,
-            'url': 'https://finance.yahoo.com/quote/BTC-USD'
-        },
-        'Ethereum': {
-            'symbol': 'ETH-USD',
-            'type': 'crypto',
-            'priority': 2,
-            'url': 'https://finance.yahoo.com/quote/ETH-USD'
-        },
-        
-        # US Treasury Bonds
+        # US Treasury Bonds (Working)
         'US 10Y Bond': {
             'symbol': '^TNX',
             'type': 'bond',
