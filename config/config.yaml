@@ -1,14 +1,17 @@
-# Scraping Configuration
+# Scraping Configuration - Yahoo Finance
 scraping:
-  base_url: "https://www.investing.com"
-  news_url: "https://www.investing.com/news/latest-news"
+  base_url: "https://finance.yahoo.com"
+  news_url: "https://finance.yahoo.com/news"
+  quote_url: "https://finance.yahoo.com/quote"
   max_retries: 3
   retry_delay: 5
   timeout: 30
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
   max_articles: 100
   scrape_frequency: "daily"
-
+  priority_filter: 2  # 1=Critical only, 2=Balanced (recommended), 3=All assets
+  delay_range: [1.5, 3.5]  # Respectful delay between requests
+  
 # Data Processing
 processing:
   text_columns: ["headline", "snippet"]
@@ -16,7 +19,7 @@ processing:
   categorical_columns: ["asset_tags", "market_tags"]
   min_text_length: 20
   max_text_length: 1000
-
+  
 # Feature Engineering
 features:
   text_features:
@@ -33,7 +36,7 @@ features:
     - asset_frequency
   composite_features:
     - weighted_stress_score
-
+    
 # Model Parameters
 models:
   regression:
@@ -60,8 +63,7 @@ models:
     n_estimators: 100
     max_depth: 6
     learning_rate: 0.1
-    objective: "multi:softprob"
-    num_class: 3
+    # Note: objective and num_class are set in code to avoid duplication
     
   knn:
     n_neighbors: 5
@@ -70,7 +72,7 @@ models:
   isolation_forest:
     contamination: 0.1
     n_estimators: 100
-
+    
 # Dashboard
 dashboard:
   chart_height: 500
