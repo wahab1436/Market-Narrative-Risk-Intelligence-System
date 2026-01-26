@@ -81,10 +81,56 @@ class XGBoostModel:
         model_logger.info("Training XGBoost model")
 
         X, y = self.prepare_data(df)
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
+        
+        # Check if we have enough data for train-test split
+        min_samples_for_split = 10
+        unique_classes = np.unique(y)
+        
+        if len(X) < min_samples_for_split:
+            model_logger.warning(f"Only {len(X)} samples available. Training without test split.")
+            
+            # Train on all data without splitting
+            model_params = self.model_config.copy()
+            model_params["objective"] = "multi:softprob"
+            model_params["num_class"] = 3
+            
+            self.model = xgb.XGBClassifier(**model_params)
+            self.model.fit(X, y)
+            
+            # Predict on training data
+            y_pred = self.model.predict(X)
+            accuracy = accuracy_score(y, y_pred)
+            
+            report = classification_report(
+                self.label_encoder.inverse_transform(y),
+                self.label_encoder.inverse_transform(y_pred),
+                output_dict=True,
+                zero_division=0,
+            )
+            
+            model_logger.info(f"XGBoost trained (small dataset): accuracy={accuracy:.4f}, samples={len(X)}")
+            
+            return {
+                "accuracy": accuracy,
+                "classification_report": report,
+                "model_params": self.model.get_params(),
+                "training_samples": len(X),
+                "note": "Trained without test split due to small dataset"
+            }
+        
+        # Check if stratification is possible
+        min_class_count = min(np.bincount(y))
+        
+        if min_class_count < 2:
+            model_logger.warning(f"Insufficient samples per class for stratification. Training without stratify.")
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42
+            )
+        else:
+            # Normal stratified split
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y
+            )
 
         # ---- SAFE PARAM HANDLING (NO DUPLICATES) ----
         model_params = self.model_config.copy()
