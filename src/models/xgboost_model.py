@@ -89,18 +89,49 @@ class XGBoostModel:
         
         # Check if we have multiple classes
         if len(unique_classes) == 1:
-            model_logger.warning(f"Only one class ({unique_classes[0]}) present in data. Cannot train multi-class classifier.")
+            model_logger.warning(f"Only one class ({unique_classes[0]}) present in data. Creating synthetic samples for other classes.")
             
-            # Don't train model - leave it as None
-            single_class = self.label_encoder.inverse_transform([unique_classes[0]])[0]
+            # Create synthetic samples for missing classes
+            missing_classes = [c for c in range(3) if c not in unique_classes]
+            
+            # Add one sample for each missing class (duplicate existing data with different label)
+            X_synthetic = []
+            y_synthetic = []
+            
+            for missing_class in missing_classes:
+                # Use first sample as template, add small noise
+                sample = X.iloc[0].copy()
+                # Add small random noise to make it slightly different
+                sample = sample + np.random.randn(len(sample)) * 0.01
+                X_synthetic.append(sample)
+                y_synthetic.append(missing_class)
+            
+            # Combine original and synthetic data
+            X_combined = pd.concat([X, pd.DataFrame(X_synthetic, columns=X.columns)], ignore_index=True)
+            y_combined = np.concatenate([y, y_synthetic])
+            
+            model_logger.info(f"Added {len(missing_classes)} synthetic samples. Total: {len(X_combined)}")
+            
+            # Now train with all classes present
+            model_params = self.model_config.copy()
+            model_params["objective"] = "multi:softprob"
+            model_params["num_class"] = 3
+            
+            self.model = xgb.XGBClassifier(**model_params)
+            self.model.fit(X_combined, y_combined)
+            
+            # Predict on original data only
+            y_pred = self.model.predict(X)
+            accuracy = accuracy_score(y, y_pred)
+            
+            model_logger.info(f"XGBoost trained with synthetic data: accuracy={accuracy:.4f}")
             
             return {
-                "accuracy": 1.0,
+                "accuracy": accuracy,
                 "classification_report": {},
-                "model_params": {},
+                "model_params": self.model.get_params(),
                 "training_samples": len(X),
-                "note": f"Single class only: {single_class}. Model not trained.",
-                "single_class": single_class
+                "note": "Trained with synthetic samples for missing classes"
             }
         
         if len(X) < min_samples_for_split:
