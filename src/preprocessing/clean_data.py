@@ -231,7 +231,7 @@ class DataCleaner:
         
         # Ensure market_tags exists
         if 'market_tags' not in df.columns:
-            df['market_tags'] = df['type'].apply(
+            df['market_tags'] = df['asset_type'].apply(
                 lambda x: [x] if pd.notna(x) else []
             )
         
