@@ -256,24 +256,65 @@ class YahooFinanceScraper:
         Searches for JSON data embedded in the page.
         """
         try:
-            # Search for regularMarketPrice in embedded JSON
-            price_match = re.search(r'"regularMarketPrice":(\d+\.?\d*)', html_content)
+            # Method 1: Search for regularMarketPrice in embedded JSON
+            price_match = re.search(r'"regularMarketPrice"[:\s]*(\d+\.?\d*)', html_content)
+            if not price_match:
+                # Try alternative pattern
+                price_match = re.search(r'"price"[:\s]*(\d+\.?\d*)', html_content)
+            
             if price_match:
                 price = float(price_match.group(1))
                 
-                # Try to get change
-                change_match = re.search(r'"regularMarketChange":([\-]?\d+\.?\d*)', html_content)
-                change = float(change_match.group(1)) if change_match else 0.0
+                # Try to get change (multiple patterns)
+                change = 0.0
+                change_match = re.search(r'"regularMarketChange"[:\s]*([\-]?\d+\.?\d*)', html_content)
+                if not change_match:
+                    change_match = re.search(r'"change"[:\s]*([\-]?\d+\.?\d*)', html_content)
+                if change_match:
+                    change = float(change_match.group(1))
                 
-                # Try to get change percent
-                change_percent_match = re.search(r'"regularMarketChangePercent":([\-]?\d+\.?\d*)', html_content)
-                change_percent = float(change_percent_match.group(1)) if change_percent_match else 0.0
+                # Try to get change percent (multiple patterns)
+                change_percent = 0.0
+                change_percent_match = re.search(r'"regularMarketChangePercent"[:\s]*([\-]?\d+\.?\d*)', html_content)
+                if not change_percent_match:
+                    change_percent_match = re.search(r'"changePercent"[:\s]*([\-]?\d+\.?\d*)', html_content)
+                if change_percent_match:
+                    change_percent = float(change_percent_match.group(1))
                 
                 return {
                     'price': price,
                     'change': change,
                     'change_percent': change_percent
                 }
+            
+            # Method 2: Try to find in root__app-data JSON blob
+            json_match = re.search(r'root\.App\.main\s*=\s*({.*?})\s*;', html_content, re.DOTALL)
+            if json_match:
+                try:
+                    import json
+                    json_data = json.loads(json_match.group(1))
+                    
+                    # Navigate JSON structure to find price
+                    if 'context' in json_data:
+                        context = json_data['context']
+                        if 'dispatcher' in context and 'stores' in context['dispatcher']:
+                            stores = context['dispatcher']['stores']
+                            if 'QuoteSummaryStore' in stores:
+                                quote_data = stores['QuoteSummaryStore']
+                                if 'price' in quote_data:
+                                    price_info = quote_data['price']
+                                    if 'regularMarketPrice' in price_info:
+                                        price = float(price_info['regularMarketPrice'].get('raw', 0))
+                                        change = float(price_info.get('regularMarketChange', {}).get('raw', 0))
+                                        change_percent = float(price_info.get('regularMarketChangePercent', {}).get('raw', 0))
+                                        
+                                        return {
+                                            'price': price,
+                                            'change': change,
+                                            'change_percent': change_percent
+                                        }
+                except:
+                    pass
             
             return None
             
@@ -319,9 +360,28 @@ class YahooFinanceScraper:
                 # Method 1: Parse HTML for fin-streamer elements
                 price_data = self._extract_price_from_html(response.text, symbol)
                 
-                # Method 2: Fallback to regex
+                # Method 2: Fallback to regex (try multiple patterns)
                 if not price_data:
+                    scraper_logger.debug(f"HTML parse failed for {symbol}, trying regex...")
                     price_data = self._extract_with_regex(response.text)
+                
+                # Method 3: Last resort - look for any number patterns near symbol
+                if not price_data:
+                    scraper_logger.debug(f"Regex failed for {symbol}, trying alternative extraction...")
+                    # Try to find price in meta tags
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    meta_price = soup.find('meta', {'property': 'og:price:amount'})
+                    if meta_price and meta_price.get('content'):
+                        try:
+                            price = float(meta_price['content'])
+                            price_data = {
+                                'price': price,
+                                'change': 0.0,
+                                'change_percent': 0.0
+                            }
+                            scraper_logger.debug(f"Extracted price from meta tag: {price}")
+                        except:
+                            pass
                 
                 if price_data:
                     self.success_count += 1
@@ -330,8 +390,11 @@ class YahooFinanceScraper:
                         f"({price_data['change_percent']:+.2f}%)"
                     )
                     return price_data
+                else:
+                    scraper_logger.warning(f"All extraction methods failed for {symbol}")
                 
                 if attempt < self.max_retries - 1:
+                    scraper_logger.debug(f"Retrying {symbol}...")
                     time.sleep(2)
                     continue
                 
