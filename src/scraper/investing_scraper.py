@@ -85,12 +85,10 @@ class SafeInvestingScraper:
             "Bitcoin": {"url": "/crypto/bitcoin/usd", "type": "crypto", "priority": 1},
             "Ethereum": {"url": "/crypto/ethereum/usd", "type": "crypto", "priority": 2},
         }
+        
+        # FIX: Use string formatting instead of multiple arguments
         scraper_logger.info(
-            "SafeInvestingScraper initialised – %d instruments (delay %ds‑%ds, retries %d)",
-            len(self.instruments),
-            self.delay_range[0],
-            self.delay_range[1],
-            self.max_retries,
+            f"SafeInvestingScraper initialised – {len(self.instruments)} instruments (delay {self.delay_range[0]}s‑{self.delay_range[1]}s, retries {self.max_retries})"
         )
         self._warm_up_session()
 
@@ -237,7 +235,7 @@ class SafeInvestingScraper:
 
     def scrape_instrument(self, name: str, info: Dict) -> Optional[Dict]:
         url = f"{self.base_url}{info['url']}"
-        scraper_logger.info("Scraping %s (%s)", name, info["type"])
+        scraper_logger.info(f"Scraping {name} ({info['type']})")
         self._random_navigation()
         resp = self._safe_request(url)
         if resp is None:
@@ -246,7 +244,7 @@ class SafeInvestingScraper:
             soup = BeautifulSoup(resp.content, "html.parser")
             price_data = self._extract_price_data(soup)
             if "price" not in price_data or price_data["price"] == 0:
-                scraper_logger.warning("No valid price extracted for %s", name)
+                scraper_logger.warning(f"No valid price extracted for {name}")
                 return None
             result = {
                 "asset": name,
@@ -263,16 +261,13 @@ class SafeInvestingScraper:
                 "day_low": price_data.get("day_low"),
                 "day_high": price_data.get("day_high"),
             }
+            # FIX: Use string formatting
             scraper_logger.info(
-                "✓ %s: $%s (%+.2f%%) change $%+.2f",
-                name,
-                result["price"],
-                result["change_percent"],
-                result["change"],
+                f"✓ {name}: ${result['price']:.2f} ({result['change_percent']:+.2f}%) change ${result['change']:+.2f}"
             )
             return result
         except Exception as exc:
-            scraper_logger.error("Parsing error for %s – %s", name, exc, exc_info=True)
+            scraper_logger.error(f"Parsing error for {name} – {exc}", exc_info=True)
             return None
 
     def scrape_all(self, priority_filter: Optional[int] = None) -> List[Dict]:
@@ -285,15 +280,17 @@ class SafeInvestingScraper:
                 for n, i in self.instruments.items()
                 if i.get("priority", 3) <= priority_filter
             }
+            # FIX: Use string formatting
             scraper_logger.info(
-                "Filtering to priority ≤ %d → %d instruments", priority_filter, len(instruments)
+                f"Filtering to priority ≤ {priority_filter} → {len(instruments)} instruments"
             )
         else:
             instruments = self.instruments
         start = time.time()
         collected: List[Dict] = []
         for idx, (name, info) in enumerate(instruments.items(), start=1):
-            scraper_logger.info("\n[%d/%d] %s", idx, len(instruments), name)
+            # FIX: Use string formatting
+            scraper_logger.info(f"\n[{idx}/{len(instruments)}] {name}")
             data = self.scrape_instrument(name, info)
             if data:
                 collected.append(data)
@@ -304,12 +301,14 @@ class SafeInvestingScraper:
         scraper_logger.info("\n" + "=" * 70)
         scraper_logger.info("SCRAPING COMPLETE")
         scraper_logger.info("=" * 70)
+        # FIX: Use string formatting
         scraper_logger.info(
-            "Success: %d / %d (%.1f%%)", len(collected), len(instruments), success_pct
+            f"Success: {len(collected)} / {len(instruments)} ({success_pct:.1f}%)"
         )
-        scraper_logger.info("Failed requests: %d", self.failed_count)
-        scraper_logger.info("Total HTTP calls: %d", self.request_count)
-        scraper_logger.info("Elapsed: %.1f s, avg %.2f s per call", elapsed, elapsed / max(self.request_count, 1))
+        scraper_logger.info(f"Failed requests: {self.failed_count}")
+        scraper_logger.info(f"Total HTTP calls: {self.request_count}")
+        avg_time = elapsed / max(self.request_count, 1)
+        scraper_logger.info(f"Elapsed: {elapsed:.1f}s, avg {avg_time:.2f}s per call")
         scraper_logger.info("=" * 70)
         return collected
 
@@ -418,7 +417,7 @@ class SafeInvestingScraper:
                     "priority": d.get("priority", 3),
                 }
             )
-        scraper_logger.info("Created %d articles (incl. overview)", len(articles))
+        scraper_logger.info(f"Created {len(articles)} articles (incl. overview)")
         return articles
 
     def save_to_bronze(self, articles: List[Dict]) -> Optional[Path]:
@@ -431,7 +430,7 @@ class SafeInvestingScraper:
         out_path = Path("data/bronze") / filename
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(out_path, index=False, engine="pyarrow")
-        scraper_logger.info("✓ Saved %d articles to %s", len(df), out_path)
+        scraper_logger.info(f"✓ Saved {len(df)} articles to {out_path}")
         return out_path
 
 
@@ -448,7 +447,7 @@ def scrape_investing_data(priority_filter: Optional[int] = None) -> Optional[Pat
         scraper_logger.warning("Scraping interrupted by user")
         return None
     except Exception as exc:
-        scraper_logger.error("Unexpected error during scraping: %s", exc, exc_info=True)
+        scraper_logger.error(f"Unexpected error during scraping: {exc}", exc_info=True)
         return None
 
 
@@ -457,7 +456,7 @@ if __name__ == "__main__":
     print("INVESTING.COM SAFE SCRAPER – Cloudflare Bypass")
     print("=" * 70)
     print("\nPriority levels:")
-    print("  1 = Critical only (VIX, S&P 500, Gold …)")
+    print("  1 = Critical only (VIX, S&P 500, Gold …)")
     print("  2 = Critical + Important")
     print("  3 = All assets")
     print("\n" + "=" * 70 + "\n")
