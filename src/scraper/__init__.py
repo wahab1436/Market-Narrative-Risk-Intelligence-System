@@ -1,7 +1,7 @@
 """
 Scraper module - Market Data Scraper
 """
-from src.scraper import YahooFinanceScraper, scrape_yahoo_finance_data
+from src.scraper.yahoo_scraper import YahooFinanceScraper, scrape_yahoo_finance_data
 
 
 def scrape_and_save():
