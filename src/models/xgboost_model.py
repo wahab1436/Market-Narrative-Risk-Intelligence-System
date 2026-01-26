@@ -86,6 +86,22 @@ class XGBoostModel:
         min_samples_for_split = 10
         unique_classes = np.unique(y)
         
+        # Check if we have multiple classes
+        if len(unique_classes) == 1:
+            model_logger.warning(f"Only one class ({unique_classes[0]}) present in data. Cannot train multi-class classifier.")
+            
+            # Create dummy model that always predicts the single class
+            single_class = self.label_encoder.inverse_transform([unique_classes[0]])[0]
+            
+            return {
+                "accuracy": 1.0,
+                "classification_report": {},
+                "model_params": {},
+                "training_samples": len(X),
+                "note": f"Single class only: {single_class}. Model not trained.",
+                "single_class": single_class
+            }
+        
         if len(X) < min_samples_for_split:
             model_logger.warning(f"Only {len(X)} samples available. Training without test split.")
             
@@ -95,7 +111,24 @@ class XGBoostModel:
             model_params["num_class"] = 3
             
             self.model = xgb.XGBClassifier(**model_params)
-            self.model.fit(X, y)
+            
+            try:
+                self.model.fit(X, y)
+            except ValueError as e:
+                if "Invalid classes" in str(e):
+                    model_logger.error(f"XGBoost error: {e}")
+                    model_logger.warning("Attempting to fix by ensuring all classes are present...")
+                    
+                    # Can't train with missing classes in XGBoost multi-class
+                    return {
+                        "accuracy": 0.0,
+                        "classification_report": {},
+                        "model_params": {},
+                        "training_samples": len(X),
+                        "note": f"Cannot train: Only {len(unique_classes)} classes present, need 3 for multi-class"
+                    }
+                else:
+                    raise
             
             # Predict on training data
             y_pred = self.model.predict(X)
