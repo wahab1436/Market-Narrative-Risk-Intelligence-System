@@ -215,7 +215,7 @@ class DataCleaner:
         df = df.copy()
         
         # Create snippet from headline if missing
-        if 'snippet' not in df.columns or df['snippet'].isna().all():
+        if 'snippet' not in df.columns or df['snippet'].isna().all():#
             df['snippet'] = df['headline']
         
         # Add market context to snippet
