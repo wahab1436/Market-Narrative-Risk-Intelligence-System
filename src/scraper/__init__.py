@@ -1,7 +1,7 @@
 """
 Scraper module - Market Data Scraper
 """
-from src.scraper.investing_scraper import SafeInvestingScraper, scrape_investing_data
+from src.scraper.yahoo_scraper import YahooFinanceScraper, scrape_yahoo_finance_data
 
 
 def scrape_and_save():
@@ -16,7 +16,7 @@ def scrape_and_save():
     # Priority 1 = Only critical (fastest)
     # Priority 2 = Critical + Important (recommended)
     # Priority 3 = All assets (slowest)
-    return scrape_investing_data(priority_filter=2)
+    return scrape_yahoo_finance_data(priority_filter=2)
 
 
-__all__ = ['scrape_and_save', 'SafeInvestingScraper', 'scrape_investing_data']
+__all__ = ['scrape_and_save', 'YahooFinanceScraper', 'scrape_yahoo_finance_data']
