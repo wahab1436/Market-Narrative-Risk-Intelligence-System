@@ -21,7 +21,7 @@ from src.utils.config_loader import config_loader
 
 # Now import everything else
 from src.utils.logger import get_pipeline_logger, setup_pipeline_logging
-from src.scraper import scrape_and_save
+from src.scraper import YahooFinanceScraper, scrape_yahoo_finance_data
 from src.preprocessing.clean_data import clean_and_save
 from src.preprocessing.feature_engineering import engineer_and_save
 from src.models.regression.linear_regression import LinearRegressionModel
