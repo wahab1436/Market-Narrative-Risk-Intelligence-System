@@ -1,16 +1,17 @@
 """
-Yahoo Finance Scraper - Reliable and Fast
+Yahoo Finance Market Data Scraper - Real Website Scraping
 """
 
-import json
-import random
-import re
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 import requests
 import pandas as pd
+from datetime import datetime
+from pathlib import Path
+import time
+import random
+import logging
+from typing import Dict, List, Optional
+import json
+import re
 from bs4 import BeautifulSoup
 
 try:
@@ -18,283 +19,257 @@ try:
 except Exception:
     import logging
     scraper_logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s – %(message)s")
-
+    logging.basicConfig(level=logging.INFO)
 
 class YahooFinanceScraper:
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    ]
-
-    def __init__(
-        self,
-        delay_range: Tuple[int, int] = (1, 3),
-        max_retries: int = 2,
-    ):
-        self.base_url = "https://finance.yahoo.com"
-        self.delay_range = delay_range
-        self.max_retries = max_retries
-        self.request_count = 0
-        self.failed_count = 0
+    def __init__(self):
+        self.session = requests.Session()
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
+        ]
         
-        # Yahoo Finance symbols for various instruments
-        self.instruments: Dict[str, Dict] = {
-            "S&P 500": {"symbol": "^GSPC", "type": "index", "priority": 1},
-            "Dow Jones": {"symbol": "^DJI", "type": "index", "priority": 1},
-            "NASDAQ": {"symbol": "^IXIC", "type": "index", "priority": 1},
-            "VIX": {"symbol": "^VIX", "type": "volatility", "priority": 1},
-            "Russell 2000": {"symbol": "^RUT", "type": "index", "priority": 2},
-            "FTSE 100": {"symbol": "^FTSE", "type": "index", "priority": 2},
-            "DAX": {"symbol": "^GDAXI", "type": "index", "priority": 2},
-            "Nikkei 225": {"symbol": "^N225", "type": "index", "priority": 2},
-            "Gold": {"symbol": "GC=F", "type": "commodity", "priority": 1},
-            "Crude Oil": {"symbol": "CL=F", "type": "commodity", "priority": 1},
-            "Silver": {"symbol": "SI=F", "type": "commodity", "priority": 2},
-            "Natural Gas": {"symbol": "NG=F", "type": "commodity", "priority": 2},
-            "Copper": {"symbol": "HG=F", "type": "commodity", "priority": 3},
-            "EUR/USD": {"symbol": "EURUSD=X", "type": "forex", "priority": 1},
-            "GBP/USD": {"symbol": "GBPUSD=X", "type": "forex", "priority": 2},
-            "USD/JPY": {"symbol": "USDJPY=X", "type": "forex", "priority": 2},
-            "USD/CHF": {"symbol": "USDCHF=X", "type": "forex", "priority": 3},
-            "Bitcoin": {"symbol": "BTC-USD", "type": "crypto", "priority": 1},
-            "Ethereum": {"symbol": "ETH-USD", "type": "crypto", "priority": 2},
+        # Real Yahoo Finance URLs
+        self.markets = {
+            # Indices
+            'S&P 500': {'symbol': '^GSPC', 'type': 'index', 'url': 'https://finance.yahoo.com/quote/%5EGSPC', 'priority': 1},
+            'DOW JONES': {'symbol': '^DJI', 'type': 'index', 'url': 'https://finance.yahoo.com/quote/%5EDJI', 'priority': 1},
+            'NASDAQ': {'symbol': '^IXIC', 'type': 'index', 'url': 'https://finance.yahoo.com/quote/%5EIXIC', 'priority': 1},
+            'VIX': {'symbol': '^VIX', 'type': 'volatility', 'url': 'https://finance.yahoo.com/quote/%5EVIX', 'priority': 1},
+            'RUSSELL 2000': {'symbol': '^RUT', 'type': 'index', 'url': 'https://finance.yahoo.com/quote/%5ERUT', 'priority': 2},
+            
+            # Commodities
+            'GOLD': {'symbol': 'GC=F', 'type': 'commodity', 'url': 'https://finance.yahoo.com/quote/GC=F', 'priority': 1},
+            'CRUDE OIL': {'symbol': 'CL=F', 'type': 'commodity', 'url': 'https://finance.yahoo.com/quote/CL=F', 'priority': 1},
+            'SILVER': {'symbol': 'SI=F', 'type': 'commodity', 'url': 'https://finance.yahoo.com/quote/SI=F', 'priority': 2},
+            'NATURAL GAS': {'symbol': 'NG=F', 'type': 'commodity', 'url': 'https://finance.yahoo.com/quote/NG=F', 'priority': 2},
+            
+            # Forex
+            'EUR/USD': {'symbol': 'EURUSD=X', 'type': 'forex', 'url': 'https://finance.yahoo.com/quote/EURUSD=X', 'priority': 1},
+            'GBP/USD': {'symbol': 'GBPUSD=X', 'type': 'forex', 'url': 'https://finance.yahoo.com/quote/GBPUSD=X', 'priority': 2},
+            'USD/JPY': {'symbol': 'USDJPY=X', 'type': 'forex', 'url': 'https://finance.yahoo.com/quote/USDJPY=X', 'priority': 2},
+            
+            # Crypto
+            'BITCOIN': {'symbol': 'BTC-USD', 'type': 'crypto', 'url': 'https://finance.yahoo.com/quote/BTC-USD', 'priority': 1},
+            'ETHEREUM': {'symbol': 'ETH-USD', 'type': 'crypto', 'url': 'https://finance.yahoo.com/quote/ETH-USD', 'priority': 2},
         }
-        
-        self.session = self._create_session()
-        scraper_logger.info(f"YahooFinanceScraper initialized – {len(self.instruments)} instruments")
 
-    def _create_session(self):
-        """Create a requests session with proper headers"""
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": random.choice(self.USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-        })
-        return session
+    def _get_random_headers(self):
+        """Generate random headers to mimic human behavior"""
+        return {
+            'User-Agent': random.choice(self.user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Cache-Control': 'max-age=0'
+        }
 
     def _human_delay(self):
-        """Random delay between requests"""
-        delay = random.uniform(*self.delay_range)
-        time.sleep(delay)
+        """Add random delay to mimic human browsing"""
+        time.sleep(random.uniform(1, 3))
 
-    def _safe_request(self, url: str) -> Optional[requests.Response]:
-        """Make a safe request with retries"""
-        for attempt in range(self.max_retries + 1):
-            try:
-                self.request_count += 1
-                response = self.session.get(url, timeout=15)
-                
-                if response.status_code == 200:
-                    return response
-                elif response.status_code == 429:  # Rate limiting
-                    wait_time = (2 ** attempt) * 5
-                    scraper_logger.warning(f"Rate limited, waiting {wait_time}s")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    scraper_logger.warning(f"HTTP {response.status_code} for {url}")
-                    
-            except requests.RequestException as e:
-                scraper_logger.warning(f"Request failed (attempt {attempt+1}): {e}")
-                if attempt < self.max_retries:
-                    time.sleep(2 ** attempt)
-                    continue
+    def _extract_price_from_html(self, html_content, symbol):
+        """Extract price data from Yahoo Finance HTML"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
             
-        self.failed_count += 1
-        return None
-
-    def scrape_instrument(self, name: str, info: Dict) -> Optional[Dict]:
-        """Scrape data for a single instrument"""
-        symbol = info["symbol"]
-        url = f"{self.base_url}/quote/{symbol}"
-        
-        scraper_logger.info(f"Scraping {name} ({symbol})")
-        
-        response = self._safe_request(url)
-        if not response:
+            # Look for the price element
+            price_element = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketPrice'})
+            if not price_element:
+                # Alternative selector
+                price_element = soup.find('div', class_='D(ib)', attrs={'data-symbol': symbol})
+            
+            if price_element and price_element.get_text():
+                price_text = price_element.get_text().replace(',', '')
+                price = float(re.findall(r'[\d\.]+', price_text)[0])
+                
+                # Try to get change information
+                change_element = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketChange'})
+                change_percent_element = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketChangePercent'})
+                
+                change = 0.0
+                change_percent = 0.0
+                
+                if change_element:
+                    change_text = change_element.get_text().replace(',', '')
+                    change_match = re.findall(r'[\d\.\-\+]+', change_text)
+                    if change_match:
+                        change = float(change_match[0])
+                
+                if change_percent_element:
+                    change_percent_text = change_percent_element.get_text().replace('%', '').replace(',', '')
+                    change_percent_match = re.findall(r'[\d\.\-\+]+', change_percent_text)
+                    if change_percent_match:
+                        change_percent = float(change_percent_match[0])
+                
+                return {
+                    'price': price,
+                    'change': change,
+                    'change_percent': change_percent
+                }
+            
+            return None
+        except Exception as e:
+            scraper_logger.error(f"Error extracting price from HTML for {symbol}: {e}")
             return None
 
+    def _scrape_with_fallback(self, url, symbol):
+        """Scrape data with multiple fallback methods"""
         try:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            price_data = self._extract_price_data(soup, name)
+            # Method 1: Direct HTML scraping
+            headers = self._get_random_headers()
+            response = self.session.get(url, headers=headers, timeout=15)
             
-            if not price_data.get('price'):
-                scraper_logger.warning(f"No price data found for {name}")
-                return None
-
-            result = {
-                "asset": name,
-                "symbol": symbol,
-                "type": info["type"],
-                "priority": info.get("priority", 3),
-                "url": url,
-                "timestamp": datetime.now().isoformat(),
-                "source": "yahoo finance",
-                "price": round(float(price_data["price"]), 4),
-                "change": round(float(price_data.get("change", 0)), 4),
-                "change_percent": round(float(price_data.get("change_percent", 0)), 4),
-                "prev_close": round(float(price_data.get("prev_close", price_data["price"])), 4),
-                "day_low": round(float(price_data.get("day_low", price_data["price"])), 4),
-                "day_high": round(float(price_data.get("day_high", price_data["price"])), 4),
-            }
+            if response.status_code == 200:
+                price_data = self._extract_price_from_html(response.text, symbol)
+                if price_data:
+                    return price_data
             
-            scraper_logger.info(f"✓ {name}: ${result['price']} ({result['change_percent']:+.2f}%)")
-            return result
+            # Method 2: Try simplified approach
+            time.sleep(1)
+            headers = self._get_random_headers()
+            response = self.session.get(url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                # Parse with regex as backup
+                price_match = re.search(r'"regularMarketPrice":(\d+\.?\d*)', response.text)
+                if price_match:
+                    price = float(price_match.group(1))
+                    change_match = re.search(r'"regularMarketChange":([\-]?\d+\.?\d*)', response.text)
+                    change_percent_match = re.search(r'"regularMarketChangePercent":"([\-]?\d+\.?\d*)%', response.text)
+                    
+                    change = float(change_match.group(1)) if change_match else 0.0
+                    change_percent = float(change_percent_match.group(1)) if change_percent_match else 0.0
+                    
+                    return {
+                        'price': price,
+                        'change': change,
+                        'change_percent': change_percent
+                    }
+            
+            return None
             
         except Exception as e:
-            scraper_logger.error(f"Error parsing {name}: {e}")
+            scraper_logger.error(f"Error scraping {url}: {e}")
             return None
 
-    def _extract_price_data(self, soup: BeautifulSoup, asset_name: str) -> Dict[str, float]:
-        """Extract price data from Yahoo Finance page"""
-        data = {}
-        
-        # Try to find the main price element
-        price_element = soup.find('fin-streamer', {'data-field': 'regularMarketPrice'})
-        if price_element and price_element.get('value'):
-            data['price'] = float(price_element['value'])
-        
-        # Try alternative selectors for price
-        if 'price' not in data:
-            price_selectors = [
-                '[data-test="qsp-price"]',
-                '.Fw(b).Fz(36px)',
-                '[data-symbol][data-field="regularMarketPrice"]',
-            ]
-            for selector in price_selectors:
-                element = soup.select_one(selector)
-                if element:
-                    price_text = element.get_text().replace(',', '')
-                    try:
-                        data['price'] = float(price_text)
-                        break
-                    except ValueError:
-                        continue
-        
-        # Extract change and change percentage
-        change_element = soup.find('fin-streamer', {'data-field': 'regularMarketChange'})
-        if change_element and change_element.get('value'):
-            data['change'] = float(change_element['value'])
-        
-        change_percent_element = soup.find('fin-streamer', {'data-field': 'regularMarketChangePercent'})
-        if change_percent_element and change_percent_element.get('value'):
-            # Remove % sign and convert to float
-            value = change_percent_element['value'].rstrip('%')
-            data['change_percent'] = float(value)
-        
-        # Extract previous close
-        prev_close_element = soup.find('td', string=re.compile('Previous Close', re.I))
-        if prev_close_element:
-            next_sibling = prev_close_element.find_next_sibling('td')
-            if next_sibling:
-                try:
-                    data['prev_close'] = float(next_sibling.get_text().replace(',', ''))
-                except ValueError:
-                    pass
-        
-        # Extract day range
-        day_range_element = soup.find('td', string=re.compile('Day\'s Range', re.I))
-        if day_range_element:
-            next_sibling = day_range_element.find_next_sibling('td')
-            if next_sibling:
-                range_text = next_sibling.get_text()
-                if ' - ' in range_text:
-                    low, high = range_text.split(' - ', 1)
-                    try:
-                        data['day_low'] = float(low.replace(',', ''))
-                        data['day_high'] = float(high.replace(',', ''))
-                    except ValueError:
-                        pass
-        
-        # If we have price but not change, try to calculate it
-        if 'price' in data and 'change' not in data and 'prev_close' in data:
-            data['change'] = data['price'] - data['prev_close']
-            if data['prev_close'] != 0:
-                data['change_percent'] = (data['change'] / data['prev_close']) * 100
-        
-        return data
-
-    def scrape_all(self, priority_filter: Optional[int] = None) -> List[Dict]:
-        """Scrape all instruments"""
-        scraper_logger.info("=" * 60)
-        scraper_logger.info("STARTING YAHOO FINANCE SCRAPING")
-        scraper_logger.info("=" * 60)
-        
-        if priority_filter:
-            instruments = {
-                n: i for n, i in self.instruments.items() 
-                if i.get("priority", 3) <= priority_filter
+    def get_market_data(self, name, market_info):
+        """Get comprehensive market data for an instrument"""
+        try:
+            scraper_logger.info(f"Scraping {name} ({market_info['symbol']})")
+            
+            # Add human-like delay
+            self._human_delay()
+            
+            # Scrape the data
+            price_data = self._scrape_with_fallback(market_info['url'], market_info['symbol'])
+            
+            if not price_data:
+                scraper_logger.warning(f"Failed to get price data for {name}")
+                return None
+            
+            # Calculate derived values
+            current_price = price_data['price']
+            change = price_data['change']
+            change_percent = price_data['change_percent']
+            
+            # Previous close calculation
+            prev_close = current_price - change if change != 0 else current_price
+            
+            return {
+                'asset': name,
+                'symbol': market_info['symbol'],
+                'type': market_info['type'],
+                'priority': market_info['priority'],
+                'price': round(float(current_price), 4),
+                'prev_close': round(float(prev_close), 4),
+                'change': round(float(change), 4),
+                'change_percent': round(float(change_percent), 4),
+                'timestamp': datetime.now().isoformat(),
+                'source': 'yahoo_finance',
+                'url': market_info['url']
             }
-            scraper_logger.info(f"Filtering to priority ≤ {priority_filter} → {len(instruments)} instruments")
-        else:
-            instruments = self.instruments
-        
-        start_time = time.time()
-        results = []
-        
-        for idx, (name, info) in enumerate(instruments.items(), 1):
-            scraper_logger.info(f"[{idx}/{len(instruments)}] Processing {name}")
             
-            data = self.scrape_instrument(name, info)
-            if data:
-                results.append(data)
-            
-            # Delay between requests
-            if idx < len(instruments):
-                self._human_delay()
-        
-        elapsed = time.time() - start_time
-        success_rate = (len(results) / len(instruments)) * 100 if instruments else 0
-        
-        scraper_logger.info("=" * 60)
-        scraper_logger.info("SCRAPING COMPLETE")
-        scraper_logger.info(f"Success: {len(results)}/{len(instruments)} ({success_rate:.1f}%)")
-        scraper_logger.info(f"Failed: {self.failed_count}")
-        scraper_logger.info(f"Total requests: {self.request_count}")
-        scraper_logger.info(f"Elapsed: {elapsed:.1f}s")
-        scraper_logger.info("=" * 60)
-        
-        return results
+        except Exception as e:
+            scraper_logger.error(f"Error getting market data for {name}: {e}")
+            return None
 
-    def calculate_market_stress(self, market_data: List[Dict]) -> float:
-        """Calculate market stress score"""
+    def scrape_all_markets(self, priority_filter=2):
+        """Scrape all markets up to the specified priority level"""
+        scraper_logger.info("Starting market data scraping")
+        scraper_logger.info(f"Priority filter: {priority_filter}")
+        
+        market_data = []
+        failed_count = 0
+        
+        # Filter markets by priority
+        filtered_markets = {
+            name: info for name, info in self.markets.items()
+            if info['priority'] <= priority_filter
+        }
+        
+        scraper_logger.info(f"Scraping {len(filtered_markets)} markets")
+        
+        for name, info in filtered_markets.items():
+            data = self.get_market_data(name, info)
+            if data:
+                market_data.append(data)
+                scraper_logger.info(f"✓ {name}: ${data['price']:.2f} ({data['change_percent']:+.2f}%)")
+            else:
+                failed_count += 1
+                scraper_logger.warning(f"✗ Failed to scrape {name}")
+            
+            # Add delay between requests to avoid rate limiting
+            if len(market_data) + failed_count < len(filtered_markets):
+                time.sleep(random.uniform(2, 4))
+        
+        scraper_logger.info(f"Completed: {len(market_data)} successful, {failed_count} failed")
+        return market_data
+
+    def calculate_market_stress(self, market_data):
+        """Calculate market stress score (0-10)"""
         if not market_data:
             return 0.0
         
-        factors = []
-        for asset in market_data:
-            change_pct = asset.get("change_percent", 0.0)
-            priority = asset.get("priority", 3)
-            
-            # VIX has special weighting
-            if "VIX" in asset["asset"]:
-                factors.append(min(asset["price"] / 10, 10) * 3.0)
-            
-            # Movement factor based on percentage change and priority
-            move_factor = min(abs(change_pct) / 2, 10) * (4 - priority)
-            factors.append(move_factor)
-            
-            # Extra weight for large negative moves
-            if change_pct < -3:
-                factors.append(min(abs(change_pct), 10) * 1.5)
+        stress_factors = []
         
-        avg_stress = sum(factors) / len(factors) if factors else 0.0
-        return min(avg_stress, 10.0)
+        for data in market_data:
+            change_pct = data.get('change_percent', 0)
+            priority = data.get('priority', 3)
+            
+            # VIX is direct fear indicator
+            if 'VIX' in data['asset']:
+                vix_stress = min(data['price'] / 10, 10)
+                stress_factors.append(vix_stress * 3.0)
+            
+            # General market moves
+            move_stress = min(abs(change_pct) / 2, 10)
+            weight = (4 - priority)  # Higher priority = higher weight
+            stress_factors.append(move_stress * weight)
+            
+            # Sharp negative moves
+            if change_pct < -3:
+                stress_factors.append(min(abs(change_pct), 10) * 1.5)
+        
+        if stress_factors:
+            avg_stress = sum(stress_factors) / len(stress_factors)
+            return min(round(avg_stress, 2), 10.0)
+        
+        return 0.0
 
-    def create_articles(self, market_data: List[Dict]) -> List[Dict]:
-        """Create articles from market data"""
+    def create_articles(self, market_data):
+        """Convert market data to article format"""
         if not market_data:
-            scraper_logger.warning("No market data for articles")
+            scraper_logger.warning("No market data to convert to articles")
             return []
         
+        articles = []
         timestamp = datetime.now().isoformat()
         stress_score = self.calculate_market_stress(market_data)
         
@@ -302,30 +277,147 @@ class YahooFinanceScraper:
         overview_lines = [
             f"Market Stress Score: {stress_score:.1f}/10",
             f"Data Points: {len(market_data)}",
-            f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
         ]
         
-        # Group by asset type
+        # Group by type
         by_type = {}
-        for asset in market_data:
-            by_type.setdefault(asset["type"], []).append(asset)
+        for data in market_data:
+            asset_type = data['type']
+            if asset_type not in by_type:
+                by_type[asset_type] = []
+            by_type[asset_type].append(data)
         
-        for asset_type, assets in sorted(by_type.items()):
-            overview_lines.append(f"{asset_type.upper()} MARKETS:")
-            for asset in sorted(assets, key=lambda x: abs(x.get("change_percent", 0)), reverse=True):
+        # Add summary for each type
+        for asset_type, items in sorted(by_type.items()):
+            overview_lines.append(f"{asset_type.upper()}:")
+            for item in sorted(items, key=lambda x: abs(x.get('change_percent', 0)), reverse=True):
                 overview_lines.append(
-                    f"  {asset['asset']}: ${asset['price']:.2f} "
-                    f"({asset['change_percent']:+.2f}%, ${asset['change']:+.2f})"
+                    f"  {item['asset']}: ${item['price']:.2f} "
+                    f"({item['change_percent']:+.2f}%, ${item['change']:+.2f})"
                 )
             overview_lines.append("")
         
         overview_article = {
-            "headline": f"Market Overview - Stress Score: {stress_score:.1f}/10",
-            "snippet": "\n".join(overview_lines)[:2000],
-            "timestamp": timestamp,
-            "asset_tags": [asset["asset"] for asset in market_data],
-            "url": "https://finance.yahoo.com",
-            "source": "yahoo finance",
-            "scraped_at": timestamp,
-            "market_st
+            'headline': f'Market Overview - Stress Level {stress_score:.1f}/10',
+            'snippet': '\n'.join(overview_lines)[:2000],
+            'timestamp': timestamp,
+            'asset_tags': [d['asset'] for d in market_data],
+            'url': 'https://finance.yahoo.com',
+            'source': 'yahoo_finance',
+            'scraped_at': timestamp,
+            'market_stress_score': stress_score,
+            'data_points': len(market_data),
+            'asset_types': list(by_type.keys()),
+        }
+        
+        articles.append(overview_article)
+        
+        # Create individual mover articles
+        for data in market_data:
+            change_pct = abs(data.get('change_percent', 0))
+            
+            # Create article for significant moves
+            should_create = (
+                change_pct > 2.0 or
+                (data.get('priority') == 1 and change_pct > 1.0) or
+                'VIX' in data['asset']
+            )
+            
+            if should_create:
+                direction = "surges" if data['change_percent'] > 3 else \
+                           "rises" if data['change_percent'] > 0 else \
+                           "plunges" if data['change_percent'] < -3 else "falls"
+                
+                headline = f"{data['asset']} {direction} {change_pct:.1f}% to ${data['price']:.2f}"
+                
+                snippet_parts = [
+                    f"{data['asset']} ({data['type']}) is trading at ${data['price']:.2f}, ",
+                    f"{direction} {change_pct:.2f}% from previous close of ${data['prev_close']:.2f}. ",
+                    f"Change: ${data['change']:+.2f}. "
+                ]
+                
+                articles.append({
+                    'headline': headline,
+                    'snippet': ''.join(snippet_parts),
+                    'timestamp': timestamp,
+                    'asset_tags': [data['asset']],
+                    'url': data['url'],
+                    'source': 'yahoo_finance',
+                    'scraped_at': timestamp,
+                    'price': data['price'],
+                    'change': data['change'],
+                    'change_percent': data['change_percent'],
+                    'asset_type': data['type'],
+                    'priority': data['priority']
+                })
+        
+        scraper_logger.info(f"Created {len(articles)} articles")
+        return articles
+
+    def save_to_bronze(self, articles):
+        """Save articles to bronze layer"""
+        if not articles:
+            scraper_logger.warning("No articles to save")
+            return None
+        
+        df = pd.DataFrame(articles)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"market_data_{timestamp}.parquet"
+        filepath = Path("data/bronze") / filename
+        
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        df.to_parquet(filepath, index=False)
+        scraper_logger.info(f"Saved {len(df)} articles to {filepath}")
+        
+        return filepath
+
+
+def scrape_market_data(priority_filter=2):
+    """Main function to scrape market data"""
+    scraper = YahooFinanceScraper()
+    
+    try:
+        # Scrape market data
+        market_data = scraper.scrape_all_markets(priority_filter=priority_filter)
+        
+        if not market_data:
+            scraper_logger.error("No market data collected")
+            return None
+        
+        # Create articles
+        articles = scraper.create_articles(market_data)
+        
+        # Save to bronze layer
+        filepath = scraper.save_to_bronze(articles)
+        
+        return filepath
+        
+    except Exception as e:
+        scraper_logger.error(f"Scraping failed: {e}", exc_info=True)
+        return None
+
+
+if __name__ == "__main__":
+    print("Yahoo Finance Market Data Scraper")
+    print("=" * 50)
+    
+    result = scrape_market_data(priority_filter=2)
+    
+    if result:
+        print(f"\nSuccess! Data saved to: {result}")
+        
+        # Show a quick preview
+        df = pd.read_parquet(result)
+        print(f"Articles created: {len(df)}")
+        
+        if len(df) > 0:
+            overview = df[df['headline'].str.contains('Overview', na=False)]
+            if not overview.empty:
+                print("\nMarket Overview Preview:")
+                print(overview.iloc[0]['snippet'][:300] + "...")
+    else:
+        print("\nScraping failed - check logs for details")
