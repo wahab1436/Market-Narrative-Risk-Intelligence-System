@@ -10,7 +10,6 @@ import time
 import random
 import logging
 from typing import Dict, List, Optional
-import json
 import re
 from bs4 import BeautifulSoup
 
@@ -80,34 +79,28 @@ class YahooFinanceScraper:
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Look for the price element
-            price_element = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketPrice'})
-            if not price_element:
-                # Alternative selector
-                price_element = soup.find('div', class_='D(ib)', attrs={'data-symbol': symbol})
+            price_elements = soup.find_all('fin-streamer')
+            price = None
+            change = 0.0
+            change_percent = 0.0
             
-            if price_element and price_element.get_text():
-                price_text = price_element.get_text().replace(',', '')
-                price = float(re.findall(r'[\d\.]+', price_text)[0])
+            for element in price_elements:
+                if element.get('data-symbol') == symbol and element.get('data-field') == 'regularMarketPrice':
+                    price_text = element.get_text().replace(',', '')
+                    if price_text and re.match(r'^[\d\.]+$', price_text):
+                        price = float(price_text)
                 
-                # Try to get change information
-                change_element = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketChange'})
-                change_percent_element = soup.find('fin-streamer', {'data-symbol': symbol, 'data-field': 'regularMarketChangePercent'})
+                if element.get('data-symbol') == symbol and element.get('data-field') == 'regularMarketChange':
+                    change_text = element.get_text().replace(',', '')
+                    if change_text and re.match(r'^[\d\.\-\+]+$', change_text):
+                        change = float(change_text)
                 
-                change = 0.0
-                change_percent = 0.0
-                
-                if change_element:
-                    change_text = change_element.get_text().replace(',', '')
-                    change_match = re.findall(r'[\d\.\-\+]+', change_text)
-                    if change_match:
-                        change = float(change_match[0])
-                
-                if change_percent_element:
-                    change_percent_text = change_percent_element.get_text().replace('%', '').replace(',', '')
-                    change_percent_match = re.findall(r'[\d\.\-\+]+', change_percent_text)
-                    if change_percent_match:
-                        change_percent = float(change_percent_match[0])
-                
+                if element.get('data-symbol') == symbol and element.get('data-field') == 'regularMarketChangePercent':
+                    change_percent_text = element.get_text().replace('%', '').replace(',', '').replace('+', '')
+                    if change_percent_text and re.match(r'^[\d\.\-\+]+$', change_percent_text):
+                        change_percent = float(change_percent_text)
+            
+            if price is not None:
                 return {
                     'price': price,
                     'change': change,
@@ -376,7 +369,7 @@ class YahooFinanceScraper:
         return filepath
 
 
-def scrape_market_data(priority_filter=2):
+def scrape_yahoo_finance_data(priority_filter=2):
     """Main function to scrape market data"""
     scraper = YahooFinanceScraper()
     
@@ -405,7 +398,7 @@ if __name__ == "__main__":
     print("Yahoo Finance Market Data Scraper")
     print("=" * 50)
     
-    result = scrape_market_data(priority_filter=2)
+    result = scrape_yahoo_finance_data(priority_filter=2)
     
     if result:
         print(f"\nSuccess! Data saved to: {result}")
