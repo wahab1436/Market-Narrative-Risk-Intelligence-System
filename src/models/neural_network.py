@@ -121,7 +121,44 @@ class NeuralNetworkModel:
         # Prepare data
         X, y = self.prepare_data(df)
         
-        # Split data
+        # Check if we have enough data for train-test split
+        min_samples_for_split = 10
+        
+        if len(X) < min_samples_for_split:
+            model_logger.warning(f"Only {len(X)} samples available. Training without validation split.")
+            
+            # Scale all data
+            X_scaled = self.scaler.fit_transform(X)
+            
+            # Build model
+            self.model = self.build_model(X_scaled.shape[1])
+            
+            # Train without validation (no callbacks)
+            history = self.model.fit(
+                X_scaled,
+                y,
+                epochs=min(50, self.model_config.get('epochs', 100)),  # Fewer epochs for small data
+                batch_size=min(len(X), self.model_config.get('batch_size', 32)),
+                verbose=0
+            )
+            
+            # Predict on training data (since no test set)
+            y_pred = self.model.predict(X_scaled, verbose=0).flatten()
+            mse = mean_squared_error(y, y_pred)
+            r2 = r2_score(y, y_pred)
+            
+            results = {
+                'mse': mse,
+                'r2': r2,
+                'training_samples': len(X),
+                'note': 'Trained without validation split due to small dataset',
+                'epochs_trained': len(history.history['loss'])
+            }
+            
+            model_logger.info(f"Neural network trained (small dataset): MSE={mse:.4f}, R2={r2:.4f}, samples={len(X)}")
+            return results
+        
+        # Normal training path for sufficient data
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42
         )
