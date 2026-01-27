@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 try:
     from main import PipelineOrchestrator
-    from src.dashboard.app import MarketRiskDashboard
+    from src.dashboard.app import MarketRiskDashboard, main
+
 except ImportError as e:
     st.error(f"Import error: {e}")
     st.info("Make sure the backend pipeline is properly set up.")
