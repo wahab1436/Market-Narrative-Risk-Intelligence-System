@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 try:
     from main import PipelineOrchestrator
-    from src.dashboard.app import MarketRiskDashboard, main
+    from src.dashboard.app import MarketRiskDashboard
 
 except ImportError as e:
     st.error(f"Import error: {e}")
