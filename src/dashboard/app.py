@@ -23,8 +23,7 @@ from src.pipeline.utils.run_id import RUN_ID
 st.set_page_config(
     page_title="Market Risk Intelligence",
     layout="wide",
-    initial_sidebar_state="expanded",
-    page_icon="📊"
+    initial_sidebar_state="expanded"
 )
 
 # Add parent directory to path for imports
