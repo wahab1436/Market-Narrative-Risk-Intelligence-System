@@ -16,8 +16,7 @@ import sys
 import traceback
 from typing import List, Dict, Optional, Tuple
 
-# Global RUN_ID (shared across the whole process)
-from src.pipeline.utils.run_id import RUN_ID
+
 
 # Page configuration - MUST be first Streamlit command
 st.set_page_config(
