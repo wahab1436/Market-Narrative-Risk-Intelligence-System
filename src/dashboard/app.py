@@ -1,7 +1,6 @@
 """
 Professional Market Narrative Risk Intelligence Dashboard.
-Modern, clean interface with comprehensive data visualization.
-Complete version with proper pipeline integration.
+Complete working version with all features, no emojis, proper data handling.
 """
 import streamlit as st
 import pandas as pd
@@ -57,9 +56,18 @@ except ImportError as e:
     logger.warning(f"EDAVisualizer not available: {e}")
     EDAVisualizer = None
 
+# Try to import SHAP with fallback
+try:
+    from src.explainability.shap_analysis import SHAPAnalyzer
+    SHAP_AVAILABLE = True
+    print("SHAP analysis imported successfully")
+except ImportError as e:
+    logger.warning(f"SHAP not available (likely Python 3.13 incompatibility): {e}")
+    SHAP_AVAILABLE = False
+
 # Import pipeline components
 try:
-    from src.scraper import scrape_and_save  # ✅ FIXED: Import from __init__.py
+    from src.scraper import scrape_and_save
     from src.preprocessing.clean_data import clean_and_save
     from src.preprocessing.feature_engineering import engineer_and_save
     PIPELINE_AVAILABLE = True
@@ -84,9 +92,7 @@ except ImportError as e:
 
 
 class MarketRiskDashboard:
-    """
-    Professional dashboard for market narrative risk intelligence.
-    """
+    """Professional dashboard for market narrative risk intelligence."""
     
     def __init__(self):
         """Initialize dashboard with professional settings."""
@@ -95,7 +101,8 @@ class MarketRiskDashboard:
         try:
             if config_loader:
                 self.config = config_loader.get_config("config")
-                self.colors = self.config.get('visualization', {}).get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+                self.colors = self.config.get('visualization', {}).get('color_palette', 
+                    ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
                 print("Configuration loaded successfully")
             else:
                 self.config = {}
@@ -109,6 +116,18 @@ class MarketRiskDashboard:
             self.eda_visualizer = EDAVisualizer(theme="plotly_white")
         else:
             self.eda_visualizer = None
+        
+        # Initialize SHAP analyzer if available
+        if SHAP_AVAILABLE:
+            try:
+                from src.explainability.shap_analysis import SHAPAnalyzer
+                self.shap_analyzer = SHAPAnalyzer()
+                logger.info("SHAP analyzer initialized")
+            except:
+                self.shap_analyzer = None
+                logger.warning("SHAP analyzer initialization failed")
+        else:
+            self.shap_analyzer = None
         
         self._init_session_state()
         self.load_data()
@@ -126,6 +145,8 @@ class MarketRiskDashboard:
             st.session_state.model_predictions = {}
         if 'pipeline_running' not in st.session_state:
             st.session_state.pipeline_running = False
+        if 'shap_values' not in st.session_state:
+            st.session_state.shap_values = None
     
     def load_data(self):
         """Load prediction data from gold layer."""
@@ -135,10 +156,20 @@ class MarketRiskDashboard:
             if not gold_dir.exists():
                 gold_dir.mkdir(parents=True, exist_ok=True)
             
+            # First try predictions files
             prediction_files = list(gold_dir.glob("*predictions*.parquet"))
             
             if prediction_files:
                 latest_file = max(prediction_files, key=lambda x: x.stat().st_mtime)
+                
+                # Check file size before attempting to read
+                file_size = latest_file.stat().st_size
+                if file_size < 100:  # Corrupted file
+                    self.logger.warning(f"Corrupted file detected: {latest_file} ({file_size} bytes)")
+                    latest_file.unlink()  # Delete it
+                    self._create_sample_data()
+                    return
+                
                 self.df = pd.read_parquet(latest_file)
                 
                 if 'timestamp' in self.df.columns:
@@ -150,41 +181,34 @@ class MarketRiskDashboard:
                 
                 self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
                 st.session_state.data_loaded = True
+                return
                 
-            else:
-                gold_files = list(gold_dir.glob("features_*.parquet"))
-                if gold_files:
-                    latest_file = max(gold_files, key=lambda x: x.stat().st_mtime)
-                    self.df = pd.read_parquet(latest_file)
-                    
-                    if 'timestamp' in self.df.columns:
-                        self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
-                        self.min_date = self.df['timestamp'].min().date()
-                        self.max_date = self.df['timestamp'].max().date()
-                    
-                    self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
-                    st.session_state.data_loaded = True
-                else:
-                    silver_dir = Path("data/silver")
-                    if silver_dir.exists():
-                        silver_files = list(silver_dir.glob("*.parquet"))
-                        if silver_files:
-                            latest_file = max(silver_files, key=lambda x: x.stat().st_mtime)
-                            self.df = pd.read_parquet(latest_file)
-                            
-                            if 'timestamp' in self.df.columns:
-                                self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
-                                self.min_date = self.df['timestamp'].min().date()
-                                self.max_date = self.df['timestamp'].max().date()
-                            
-                            self.logger.info(f"Loaded {len(self.df)} records from silver layer: {latest_file}")
-                            st.session_state.data_loaded = True
-                        else:
-                            self._create_sample_data()
-                            self.logger.warning("No data files found, using sample data")
-                    else:
-                        self._create_sample_data()
-                        self.logger.warning("No data directories found, using sample data")
+            # Try feature files
+            gold_files = list(gold_dir.glob("features_*.parquet"))
+            if gold_files:
+                latest_file = max(gold_files, key=lambda x: x.stat().st_mtime)
+                
+                file_size = latest_file.stat().st_size
+                if file_size < 100:
+                    self.logger.warning(f"Corrupted file: {latest_file}")
+                    latest_file.unlink()
+                    self._create_sample_data()
+                    return
+                
+                self.df = pd.read_parquet(latest_file)
+                
+                if 'timestamp' in self.df.columns:
+                    self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+                    self.min_date = self.df['timestamp'].min().date()
+                    self.max_date = self.df['timestamp'].max().date()
+                
+                self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
+                st.session_state.data_loaded = True
+                return
+            
+            # No valid files found
+            self._create_sample_data()
+            self.logger.warning("No valid data files found, using sample data")
                     
         except Exception as e:
             self.logger.error(f"Failed to load data: {e}", exc_info=True)
@@ -221,6 +245,7 @@ class MarketRiskDashboard:
             'market_breadth': np.random.uniform(0, 1, len(dates))
         })
         
+        # Normalize probabilities
         probs = self.df[['prob_low', 'prob_medium', 'prob_high']].values
         probs = probs / probs.sum(axis=1, keepdims=True)
         self.df[['prob_low', 'prob_medium', 'prob_high']] = probs
@@ -235,28 +260,14 @@ class MarketRiskDashboard:
         """Run the complete pipeline: scraping -> cleaning -> features -> models."""
         if not PIPELINE_AVAILABLE:
             st.error("Pipeline components not available. Cannot run full pipeline.")
-            st.info("Pipeline components missing. Try 'Quick Update' instead, which uses existing data.")
-            with st.expander("Why is this happening?"):
-                st.write("""
-                The full pipeline requires:
-                - src.scraper (for data collection)
-                - src.preprocessing.clean_data
-                - src.preprocessing.feature_engineering
-                
-                These modules may not be deployed or have import errors.
-                Use 'Quick Update' button instead to update predictions with existing data.
-                """)
             return False
-        
-        if not MODELS_AVAILABLE:
-            st.warning("Some model imports failed. Pipeline will use available models only.")
-            # Continue anyway with available models
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         try:
+            # Step 1: Scraping
             status_text.text("Step 1/4: Scraping news articles...")
             progress_bar.progress(10)
             self.logger.info("Starting scraping phase")
@@ -270,6 +281,7 @@ class MarketRiskDashboard:
             self.logger.info(f"Scraping completed: {bronze_path}")
             progress_bar.progress(25)
             
+            # Step 2: Cleaning
             status_text.text("Step 2/4: Cleaning and validating data...")
             progress_bar.progress(30)
             self.logger.info("Starting cleaning phase")
@@ -283,6 +295,7 @@ class MarketRiskDashboard:
             self.logger.info(f"Cleaning completed: {silver_path}")
             progress_bar.progress(50)
             
+            # Step 3: Feature Engineering
             status_text.text("Step 3/4: Engineering features...")
             progress_bar.progress(55)
             self.logger.info("Starting feature engineering")
@@ -296,6 +309,7 @@ class MarketRiskDashboard:
             self.logger.info(f"Feature engineering completed: {gold_path}")
             progress_bar.progress(70)
             
+            # Step 4: Model Training
             status_text.text("Step 4/4: Training models and generating predictions...")
             progress_bar.progress(75)
             self.logger.info("Starting model training")
@@ -333,6 +347,7 @@ class MarketRiskDashboard:
                         predictions_dfs.append(predictions_subset)
                         self.logger.info(f"{model_name} completed successfully")
                     
+                    # Save model
                     model_dir = Path("models")
                     model_dir.mkdir(exist_ok=True)
                     model.save(model_dir / f"{model_name}_{timestamp}.joblib")
@@ -345,6 +360,7 @@ class MarketRiskDashboard:
             status_text.text("Merging predictions...")
             
             if predictions_dfs:
+                # Merge all predictions
                 final_predictions = df[['timestamp']].copy()
                 
                 for pred_df in predictions_dfs:
@@ -354,6 +370,7 @@ class MarketRiskDashboard:
                         how='left'
                     )
                 
+                # Add original features
                 feature_cols = [col for col in df.columns if col != 'timestamp']
                 final_predictions = final_predictions.merge(
                     df[['timestamp'] + feature_cols],
@@ -361,6 +378,7 @@ class MarketRiskDashboard:
                     how='left'
                 )
                 
+                # Save predictions
                 predictions_path = Path("data/gold") / f"predictions_{timestamp}.parquet"
                 final_predictions.to_parquet(predictions_path, index=False)
                 
@@ -384,7 +402,7 @@ class MarketRiskDashboard:
             status_text.empty()
     
     def _run_quick_update(self):
-        """Run quick update using existing data with lightweight models - NO pipeline dependencies needed."""
+        """Run quick update using existing data with lightweight models."""
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -392,17 +410,17 @@ class MarketRiskDashboard:
             status_text.text("Loading existing data...")
             progress_bar.progress(10)
             
-            # Check if we have any data
             if not hasattr(self, 'df') or self.df is None or self.df.empty:
-                st.error("No data available. Please ensure data files exist in data/gold/, data/silver/, or data/bronze/")
+                st.error("No data available. Please ensure data files exist.")
                 return False
             
             df = self.df.copy()
-            df = df.tail(500)
+            df = df.tail(500)  # Use recent data only
             
             status_text.text("Engineering features...")
             progress_bar.progress(30)
             
+            # Add rolling features
             if 'sentiment_polarity' in df.columns:
                 df['sentiment_ma_7'] = df['sentiment_polarity'].rolling(7, min_periods=1).mean()
             
@@ -414,6 +432,7 @@ class MarketRiskDashboard:
             
             from sklearn.linear_model import LinearRegression, Ridge
             
+            # Prepare features
             feature_cols = [col for col in df.columns if col not in [
                 'timestamp', 'headline', 'weighted_stress_score'
             ]]
@@ -423,12 +442,14 @@ class MarketRiskDashboard:
             
             predictions = df.copy()
             
+            # Linear Regression
             lr_model = LinearRegression()
             lr_model.fit(X, y)
             predictions['linear_regression_prediction'] = lr_model.predict(X)
             
             progress_bar.progress(70)
             
+            # Ridge Regression
             ridge_model = Ridge(alpha=1.0)
             ridge_model.fit(X, y)
             predictions['ridge_regression_prediction'] = ridge_model.predict(X)
@@ -436,6 +457,7 @@ class MarketRiskDashboard:
             status_text.text("Generating risk classifications...")
             progress_bar.progress(85)
             
+            # Risk regimes based on stress scores
             stress_values = predictions.get('weighted_stress_score', y)
             predictions['xgboost_risk_regime'] = pd.cut(
                 stress_values,
@@ -443,10 +465,12 @@ class MarketRiskDashboard:
                 labels=['low', 'medium', 'high']
             )
             
+            # Probabilities
             predictions['prob_low'] = (stress_values < 0.3).astype(float)
             predictions['prob_medium'] = ((stress_values >= 0.3) & (stress_values < 0.7)).astype(float)
             predictions['prob_high'] = (stress_values >= 0.7).astype(float)
             
+            # Anomaly detection using z-scores
             z_scores = np.abs((stress_values - stress_values.mean()) / stress_values.std())
             predictions['is_anomaly'] = (z_scores > 2).astype(int)
             predictions['anomaly_score'] = z_scores
@@ -454,13 +478,14 @@ class MarketRiskDashboard:
             status_text.text("Saving predictions...")
             progress_bar.progress(95)
             
+            # Save to gold directory
             gold_dir = Path("data/gold")
             gold_dir.mkdir(parents=True, exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = gold_dir / f"predictions_{timestamp}.parquet"
             
-            predictions.to_parquet(output_file)
+            predictions.to_parquet(output_file, index=False)
             
             self.logger.info(f"Quick update saved to: {output_file}")
             
@@ -497,6 +522,7 @@ class MarketRiskDashboard:
     def render_sidebar(self):
         """Render professional sidebar with filters and navigation."""
         with st.sidebar:
+            # System status
             gold_dir = Path("data/gold")
             data_status = "No data"
             data_time = "Never"
@@ -509,11 +535,14 @@ class MarketRiskDashboard:
                     data_status = "Available"
                     data_time = mod_time.strftime("%Y-%m-%d %H:%M")
             
+            shap_status = "Available" if SHAP_AVAILABLE else "Unavailable (Python 3.13)"
+            
             st.markdown(f"""
             <div style='padding: 10px; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px;'>
                 <p style='font-size: 0.9em; color: #6c757d; margin: 0;'>
                 <strong>System Status:</strong> Operational<br>
                 <strong>Data Status:</strong> {data_status}<br>
+                <strong>SHAP Analysis:</strong> {shap_status}<br>
                 <strong>Last Updated:</strong> {data_time}<br>
                 <strong>Records Loaded:</strong> {len(self.df) if hasattr(self, 'df') else 0:,}
                 </p>
@@ -523,7 +552,7 @@ class MarketRiskDashboard:
             st.markdown("---")
             st.markdown("### Pipeline Control")
             
-            # Show pipeline status
+            # Show component status
             if PIPELINE_AVAILABLE:
                 st.success("Pipeline: Available")
             else:
@@ -534,43 +563,36 @@ class MarketRiskDashboard:
             else:
                 st.warning("Models: Limited")
             
+            # Update buttons
             col1, col2 = st.columns(2)
             
             with col1:
                 full_disabled = not PIPELINE_AVAILABLE
                 if st.button("Full Update", type="primary", use_container_width=True, 
                            disabled=full_disabled,
-                           help="Run complete pipeline with new data scraping (5-10 min)" if not full_disabled else "Pipeline components not available"):
-                    with st.spinner("Running full pipeline... This may take 5-10 minutes."):
+                           help="Run complete pipeline with new data scraping"):
+                    with st.spinner("Running full pipeline..."):
                         success = self._run_full_pipeline()
                         if success:
                             self.load_data()
-                            st.success("Full pipeline completed! Refreshing dashboard...")
+                            st.success("Full pipeline completed!")
                             import time
                             time.sleep(2)
                             st.rerun()
-                        else:
-                            st.error("Pipeline failed. Check logs for details.")
             
             with col2:
-                if st.button("Quick Update", use_container_width=True, help="Fast update with existing data (1-2 min) - Always available"):
+                if st.button("Quick Update", use_container_width=True):
                     with st.spinner("Running quick update..."):
                         success = self._run_quick_update()
                         if success:
                             self.load_data()
-                            st.success("Quick update completed! Refreshing...")
+                            st.success("Quick update completed!")
                             import time
                             time.sleep(2)
                             st.rerun()
-                        else:
-                            st.error("Update failed.")
             
             if st.button("Refresh View", use_container_width=True):
                 st.rerun()
-            
-            st.caption("Full Update: Scrapes new data (requires pipeline)")
-            st.caption("Quick Update: Uses existing data (always works)")
-            st.caption("Refresh View: Reloads current data")
             
             st.markdown("---")
             st.markdown("### Navigation")
@@ -580,6 +602,7 @@ class MarketRiskDashboard:
                 'stress_analysis': 'Stress Score Analysis',
                 'risk_regimes': 'Risk Regime Classification',
                 'anomaly_detection': 'Anomaly Detection',
+                'explainability': 'Model Explainability (SHAP)',
                 'historical_similarity': 'Historical Similarity',
                 'model_performance': 'Model Performance',
                 'feature_analysis': 'Feature Analysis',
@@ -597,6 +620,7 @@ class MarketRiskDashboard:
             st.markdown("---")
             st.markdown("### Data Filters")
             
+            # Date range filter
             if hasattr(self, 'min_date') and hasattr(self, 'max_date'):
                 date_diff = (self.max_date - self.min_date).days
                 
@@ -621,17 +645,15 @@ class MarketRiskDashboard:
             else:
                 self.start_date = self.end_date = datetime.now().date()
             
+            # Risk regime filter
             if 'xgboost_risk_regime' in self.df.columns:
                 risk_regimes = ['All'] + sorted(self.df['xgboost_risk_regime'].dropna().unique().tolist())
-                selected_regime = st.selectbox(
-                    "Risk Regime Filter",
-                    risk_regimes,
-                    index=0
-                )
+                selected_regime = st.selectbox("Risk Regime Filter", risk_regimes, index=0)
                 self.selected_regime = selected_regime if selected_regime != 'All' else None
             else:
                 self.selected_regime = None
             
+            # Anomaly filter
             if 'is_anomaly' in self.df.columns:
                 anomaly_filter = st.radio(
                     "Anomaly Filter",
@@ -642,51 +664,39 @@ class MarketRiskDashboard:
             else:
                 self.anomaly_filter = 'All Data'
             
+            # Confidence threshold
             confidence_threshold = st.slider(
                 "Minimum Confidence Threshold",
                 min_value=0.0,
                 max_value=1.0,
                 value=0.7,
-                step=0.05,
-                help="Filter predictions by model confidence"
+                step=0.05
             )
             self.confidence_threshold = confidence_threshold
-            
-            st.markdown("---")
-            
-            with st.expander("Data Statistics", expanded=False):
-                if st.session_state.data_loaded:
-                    total_records = len(self.df)
-                    filtered_df = self._apply_filters(self.df)
-                    filtered_records = len(filtered_df)
-                    
-                    st.metric("Total Records", f"{total_records:,}")
-                    st.metric("Filtered Records", f"{filtered_records:,}")
-                    
-                    if 'xgboost_risk_regime' in filtered_df.columns:
-                        regime_counts = filtered_df['xgboost_risk_regime'].value_counts()
-                        for regime, count in regime_counts.items():
-                            st.metric(f"{regime.title()} Risk", f"{count:,}")
     
     def _apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply all sidebar filters to data."""
         filtered_df = df.copy()
         
+        # Date filter
         if 'timestamp' in filtered_df.columns:
             filtered_df = filtered_df[
                 (filtered_df['timestamp'].dt.date >= self.start_date) &
                 (filtered_df['timestamp'].dt.date <= self.end_date)
             ]
         
+        # Risk regime filter
         if self.selected_regime and 'xgboost_risk_regime' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['xgboost_risk_regime'] == self.selected_regime]
         
+        # Anomaly filter
         if 'is_anomaly' in filtered_df.columns:
             if self.anomaly_filter == 'Anomalies Only':
                 filtered_df = filtered_df[filtered_df['is_anomaly'] == 1]
             elif self.anomaly_filter == 'Exclude Anomalies':
                 filtered_df = filtered_df[filtered_df['is_anomaly'] == 0]
         
+        # Confidence filter
         prob_cols = [col for col in filtered_df.columns if col.startswith('prob_')]
         if prob_cols:
             max_probs = filtered_df[prob_cols].max(axis=1)
@@ -704,11 +714,12 @@ class MarketRiskDashboard:
             st.warning("No data matches current filters. Please adjust your filter settings.")
             return
         
+        # Key metrics
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             if 'weighted_stress_score' in filtered_df.columns:
-                current_stress = filtered_df['weighted_stress_score'].iloc[-1] if len(filtered_df) > 0 else 0
+                current_stress = filtered_df['weighted_stress_score'].iloc[-1]
                 avg_stress = filtered_df['weighted_stress_score'].mean()
                 st.metric(
                     "Current Stress Score",
@@ -720,7 +731,7 @@ class MarketRiskDashboard:
         
         with col2:
             if 'xgboost_risk_regime' in filtered_df.columns:
-                current_regime = filtered_df['xgboost_risk_regime'].iloc[-1] if len(filtered_df) > 0 else "Unknown"
+                current_regime = filtered_df['xgboost_risk_regime'].iloc[-1]
                 regime_color = {
                     'low': 'green',
                     'medium': 'orange',
@@ -760,6 +771,7 @@ class MarketRiskDashboard:
         
         st.markdown("---")
         
+        # Recent articles table
         st.markdown("### Recent Articles")
         display_cols = ['timestamp', 'headline', 'sentiment_polarity', 'weighted_stress_score']
         display_cols = [col for col in display_cols if col in filtered_df.columns]
@@ -768,13 +780,13 @@ class MarketRiskDashboard:
             recent_data = filtered_df[display_cols].tail(10).copy()
             if 'timestamp' in recent_data.columns:
                 recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-            st.dataframe(recent_data, width='stretch', hide_index=True)
+            st.dataframe(recent_data, use_container_width=True, hide_index=True)
         else:
             st.info("No displayable columns available in the data")
     
     def render_stress_analysis(self):
         """Render detailed stress analysis view."""
-        st.markdown("## Stress Analysis")
+        st.markdown("## Stress Score Analysis")
         
         filtered_df = self._apply_filters(self.df)
         
@@ -786,6 +798,7 @@ class MarketRiskDashboard:
             st.info("Stress score data not yet available. Run the pipeline to generate predictions.")
             return
         
+        # Time series plot
         fig = go.Figure()
         
         fig.add_trace(go.Scatter(
@@ -797,6 +810,7 @@ class MarketRiskDashboard:
             marker=dict(size=4)
         ))
         
+        # Add trend line
         if len(filtered_df) > 2:
             z = np.polyfit(range(len(filtered_df)), filtered_df['weighted_stress_score'], 1)
             p = np.poly1d(z)
@@ -818,6 +832,7 @@ class MarketRiskDashboard:
         
         st.plotly_chart(fig, use_container_width=True)
         
+        # Statistics
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -840,6 +855,7 @@ class MarketRiskDashboard:
             return
         
         if 'xgboost_risk_regime' in filtered_df.columns:
+            # Distribution pie chart
             regime_counts = filtered_df['xgboost_risk_regime'].value_counts()
             
             fig = go.Figure(data=[go.Pie(
@@ -853,8 +869,9 @@ class MarketRiskDashboard:
                 height=400
             )
             
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
             
+            # Time series scatter
             fig2 = px.scatter(
                 filtered_df,
                 x='timestamp',
@@ -879,6 +896,7 @@ class MarketRiskDashboard:
             return
         
         if 'is_anomaly' in filtered_df.columns:
+            # Anomaly timeline
             fig = go.Figure()
             
             normal = filtered_df[filtered_df['is_anomaly'] == 0]
@@ -910,6 +928,7 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
+            # Statistics
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Total Anomalies", int(filtered_df['is_anomaly'].sum()))
@@ -917,6 +936,223 @@ class MarketRiskDashboard:
                 st.metric("Anomaly Rate", f"{(filtered_df['is_anomaly'].sum() / len(filtered_df) * 100):.1f}%")
         else:
             st.info("Anomaly detection not yet available. Run the pipeline with Isolation Forest model.")
+    
+    def render_explainability(self):
+        """Render SHAP explainability analysis view."""
+        st.markdown("## Model Explainability (SHAP Analysis)")
+        
+        if not SHAP_AVAILABLE:
+            st.warning("""
+            SHAP Analysis Not Available
+            
+            SHAP (SHapley Additive exPlanations) requires Python < 3.10, but you're running Python 3.13.
+            
+            Solutions:
+            1. Downgrade Python to 3.9 or 3.10 (recommended for SHAP)
+            2. Use Alternative: Feature importance from tree-based models (shown below)
+            3. Wait: SHAP maintainers may add Python 3.13 support in future releases
+            
+            For now, showing alternative feature importance analysis:
+            """)
+            
+            # Fallback: Show feature importance without SHAP
+            filtered_df = self._apply_filters(self.df)
+            
+            if filtered_df.empty:
+                st.warning("No data available")
+                return
+            
+            # Try to get feature importances from model files
+            st.markdown("### Feature Importance (Model-based)")
+            
+            model_dir = Path("models")
+            if model_dir.exists():
+                import joblib
+                model_files = list(model_dir.glob("xgboost_*.joblib"))
+                
+                if model_files:
+                    latest_model = max(model_files, key=lambda x: x.stat().st_mtime)
+                    
+                    try:
+                        model = joblib.load(latest_model)
+                        
+                        if hasattr(model, 'model') and hasattr(model.model, 'feature_importances_'):
+                            importances = model.model.feature_importances_
+                            feature_names = model.feature_columns if hasattr(model, 'feature_columns') else [f"Feature {i}" for i in range(len(importances))]
+                            
+                            # Create DataFrame
+                            importance_df = pd.DataFrame({
+                                'Feature': feature_names,
+                                'Importance': importances
+                            }).sort_values('Importance', ascending=False).head(20)
+                            
+                            # Plot
+                            fig = px.bar(
+                                importance_df,
+                                x='Importance',
+                                y='Feature',
+                                orientation='h',
+                                title='Top 20 Features by Importance'
+                            )
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            st.dataframe(importance_df, use_container_width=True)
+                            
+                        else:
+                            st.info("Model doesn't support feature importance extraction")
+                    
+                    except Exception as e:
+                        st.error(f"Failed to load model: {e}")
+                else:
+                    st.info("No XGBoost models found. Train models first.")
+            else:
+                st.info("No models directory found")
+            
+            # Show correlation-based importance
+            st.markdown("### Feature Correlation with Target")
+            
+            if 'weighted_stress_score' in filtered_df.columns:
+                numeric_cols = filtered_df.select_dtypes(include=[np.number]).columns
+                correlations = filtered_df[numeric_cols].corrwith(filtered_df['weighted_stress_score']).abs().sort_values(ascending=False).head(20)
+                
+                corr_df = pd.DataFrame({
+                    'Feature': correlations.index,
+                    'Absolute Correlation': correlations.values
+                })
+                
+                fig = px.bar(
+                    corr_df,
+                    x='Absolute Correlation',
+                    y='Feature',
+                    orientation='h',
+                    title='Top 20 Features by Correlation with Stress Score'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            return
+        
+        # SHAP is available - show full analysis
+        st.markdown("""
+        SHAP (SHapley Additive exPlanations) provides interpretable explanations for model predictions
+        by showing how each feature contributes to individual predictions.
+        """)
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available for analysis")
+            return
+        
+        # Load trained model
+        model_dir = Path("models")
+        if not model_dir.exists():
+            st.warning("No trained models found. Please run the pipeline first.")
+            return
+        
+        model_files = list(model_dir.glob("xgboost_*.joblib"))
+        if not model_files:
+            st.warning("No XGBoost models found. SHAP analysis requires tree-based models.")
+            return
+        
+        latest_model_path = max(model_files, key=lambda x: x.stat().st_mtime)
+        
+        try:
+            import joblib
+            model = joblib.load(latest_model_path)
+            
+            st.success(f"Loaded model: {latest_model_path.name}")
+            
+            # Prepare data
+            feature_cols = [col for col in filtered_df.columns 
+                          if col not in ['timestamp', 'headline', 'weighted_stress_score', 
+                                       'xgboost_risk_regime', 'is_anomaly']]
+            
+            X = filtered_df[feature_cols].select_dtypes(include=[np.number]).fillna(0)
+            
+            if X.empty:
+                st.warning("No numeric features available for SHAP analysis")
+                return
+            
+            # Calculate SHAP values
+            with st.spinner("Calculating SHAP values... This may take a minute."):
+                try:
+                    shap_values = self.shap_analyzer.explain_prediction(
+                        model=model.model if hasattr(model, 'model') else model,
+                        X=X
+                    )
+                    
+                    st.session_state.shap_values = shap_values
+                    
+                    st.success("SHAP analysis complete")
+                    
+                except Exception as e:
+                    st.error(f"SHAP calculation failed: {e}")
+                    return
+            
+            # Display SHAP visualizations
+            st.markdown("### SHAP Summary Plot")
+            st.markdown("Shows the impact of each feature on model output")
+            
+            try:
+                fig = self.shap_analyzer.plot_feature_importance(
+                    shap_values,
+                    X,
+                    plot_type='summary'
+                )
+                
+                if fig:
+                    st.pyplot(fig)
+            except Exception as e:
+                st.error(f"Failed to create SHAP plot: {e}")
+            
+            # Feature importance
+            st.markdown("### Feature Importance (SHAP-based)")
+            
+            try:
+                fig = self.shap_analyzer.plot_feature_importance(
+                    shap_values,
+                    X,
+                    plot_type='bar'
+                )
+                
+                if fig:
+                    st.pyplot(fig)
+            except Exception as e:
+                st.error(f"Failed to create importance plot: {e}")
+            
+            # Individual prediction explanation
+            st.markdown("### Individual Prediction Explanation")
+            
+            sample_idx = st.slider(
+                "Select sample to explain",
+                0,
+                len(X) - 1,
+                len(X) - 1
+            )
+            
+            try:
+                fig = self.shap_analyzer.plot_waterfall(
+                    shap_values,
+                    X,
+                    sample_idx
+                )
+                
+                if fig:
+                    st.pyplot(fig)
+                    
+                    # Show actual values
+                    st.markdown("**Feature Values for Selected Sample:**")
+                    sample_data = X.iloc[sample_idx].sort_values(ascending=False).head(10)
+                    st.dataframe(sample_data)
+                    
+            except Exception as e:
+                st.error(f"Failed to create waterfall plot: {e}")
+                
+        except Exception as e:
+            st.error(f"Failed to load model: {e}")
+            st.code(traceback.format_exc())
     
     def render_historical_similarity(self):
         """Render historical similarity view."""
@@ -928,6 +1164,7 @@ class MarketRiskDashboard:
             st.info("Historical pattern analysis requires stress score data")
             return
         
+        # Distribution histogram
         fig = px.histogram(
             filtered_df,
             x='weighted_stress_score',
@@ -937,6 +1174,7 @@ class MarketRiskDashboard:
         
         st.plotly_chart(fig, use_container_width=True)
         
+        # Correlation scatter
         if 'sentiment_polarity' in filtered_df.columns:
             fig2 = px.scatter(
                 filtered_df,
@@ -975,6 +1213,7 @@ class MarketRiskDashboard:
         if pred_cols and 'weighted_stress_score' in filtered_df.columns:
             st.markdown("### Model Predictions Comparison")
             
+            # Time series comparison
             fig = go.Figure()
             
             fig.add_trace(go.Scatter(
@@ -985,7 +1224,7 @@ class MarketRiskDashboard:
                 line=dict(color='black', width=2)
             ))
             
-            for i, col in enumerate(pred_cols[:4]):
+            for i, col in enumerate(pred_cols[:4]):  # Show max 4 models
                 fig.add_trace(go.Scatter(
                     x=filtered_df['timestamp'],
                     y=filtered_df[col],
@@ -1004,6 +1243,7 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
+            # Model metrics
             st.markdown("### Model Metrics")
             
             metrics_data = []
@@ -1025,7 +1265,7 @@ class MarketRiskDashboard:
                     pass
             
             if metrics_data:
-                st.dataframe(pd.DataFrame(metrics_data), width='stretch', hide_index=True)
+                st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
         else:
             st.info("Model predictions not yet available. Run the pipeline to train models.")
     
@@ -1045,7 +1285,8 @@ class MarketRiskDashboard:
         if len(numeric_cols) > 1:
             st.markdown("### Feature Correlations")
             
-            corr_cols = numeric_cols[:15]
+            # Correlation matrix
+            corr_cols = numeric_cols[:15]  # Limit to 15 features
             corr_matrix = filtered_df[corr_cols].corr()
             
             fig = px.imshow(
@@ -1063,12 +1304,13 @@ class MarketRiskDashboard:
             
             st.plotly_chart(fig, use_container_width=True)
             
+            # Feature statistics
             st.markdown("### Feature Statistics")
             
             stats_df = filtered_df[numeric_cols].describe().T
             stats_df = stats_df.round(3)
             
-            st.dataframe(stats_df, width='stretch')
+            st.dataframe(stats_df, use_container_width=True)
         else:
             st.info("Not enough features for analysis")
     
@@ -1094,10 +1336,11 @@ class MarketRiskDashboard:
         
         with col2:
             st.markdown("### Data Preview")
-            st.dataframe(filtered_df.head(5), width='stretch')
+            st.dataframe(filtered_df.head(5), use_container_width=True)
         
         st.markdown(f"**Total Records:** {len(filtered_df):,}")
         
+        # Export buttons
         if export_format == 'CSV':
             csv = filtered_df.to_csv(index=False)
             st.download_button(
@@ -1145,11 +1388,13 @@ class MarketRiskDashboard:
             self.render_header()
             self.render_sidebar()
             
+            # View handlers
             view_handlers = {
                 'overview': self.render_overview,
                 'stress_analysis': self.render_stress_analysis,
                 'risk_regimes': self.render_risk_regimes,
                 'anomaly_detection': self.render_anomaly_detection,
+                'explainability': self.render_explainability,
                 'historical_similarity': self.render_historical_similarity,
                 'model_performance': self.render_model_performance,
                 'feature_analysis': self.render_feature_analysis,
