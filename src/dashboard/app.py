@@ -1,9 +1,8 @@
 """
-Market Risk Intelligence Dashboard
-
-Professional dashboard for real-time market risk monitoring and analysis.
+Professional Market Narrative Risk Intelligence Dashboard.
+Modern, clean interface with comprehensive data visualization.
+Complete version with proper pipeline integration.
 """
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,868 +12,1175 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
-import yaml
-import pickle
-import logging
-from typing import Dict, List, Optional
 import sys
+import traceback
+from typing import List, Dict, Optional, Tuple
 
-# Add project root to path
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Page configuration
+# Page configuration - MUST be first Streamlit command
 st.set_page_config(
-    page_title="Market Risk Intelligence Platform",
+    page_title="Market Narrative Risk Intelligence",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': None,
+        'Report a bug': None,
+        'About': "Market Narrative Risk Intelligence System v1.0.0"
+    }
 )
 
-# Professional CSS styling
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E3A8A;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-    }
-    .section-header {
-        font-size: 1.6rem;
-        color: #374151;
-        font-weight: 600;
-        margin-top: 2rem;
-        margin-bottom: 1rem;
-        border-bottom: 2px solid #3B82F6;
-        padding-bottom: 0.5rem;
-    }
-    .metric-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 8px;
-        border-left: 4px solid #3B82F6;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-    }
-    .metric-title {
-        font-size: 0.875rem;
-        color: #6B7280;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 0.5rem;
-    }
-    .metric-value {
-        font-size: 1.875rem;
-        font-weight: 700;
-        color: #1F2937;
-        margin-bottom: 0.25rem;
-    }
-    .metric-change {
-        font-size: 0.875rem;
-        color: #6B7280;
-    }
-    .alert-high {
-        border-left-color: #DC2626;
-    }
-    .alert-medium {
-        border-left-color: #F59E0B;
-    }
-    .alert-low {
-        border-left-color: #10B981;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2rem;
-    }
-    .stTabs [data-baseweb="tab"] {
-        padding: 0.75rem 1.5rem;
-        font-weight: 500;
-    }
-    .info-box {
-        background: #EFF6FF;
-        border-left: 4px solid #3B82F6;
-        padding: 1rem;
-        border-radius: 4px;
-        margin: 1rem 0;
-    }
-    .warning-box {
-        background: #FEF3C7;
-        border-left: 4px solid #F59E0B;
-        padding: 1rem;
-        border-radius: 4px;
-        margin: 1rem 0;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Import project modules with proper error handling
+try:
+    from src.utils.config_loader import config_loader
+    print("Config loader imported successfully")
+except ImportError as e:
+    print(f"Warning: Failed to import config_loader: {e}")
+    config_loader = None
+
+try:
+    import logging
+    from src.utils.logger import get_dashboard_logger
+    logger = get_dashboard_logger()
+    print("Logger imported successfully")
+except ImportError as e:
+    print(f"Warning: Failed to import logger: {e}")
+    import logging
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
+
+try:
+    from src.eda.visualization import EDAVisualizer
+    print("EDAVisualizer imported successfully")
+except ImportError as e:
+    logger.warning(f"EDAVisualizer not available: {e}")
+    EDAVisualizer = None
+
+# Import pipeline components
+try:
+    from src.scraper import scrape_and_save  # ✅ FIXED: Import from __init__.py
+    from src.preprocessing.clean_data import clean_and_save
+    from src.preprocessing.feature_engineering import engineer_and_save
+    PIPELINE_AVAILABLE = True
+    print("Pipeline components imported successfully")
+except ImportError as e:
+    logger.warning(f"Pipeline components not available: {e}")
+    PIPELINE_AVAILABLE = False
+
+# Import models
+try:
+    from src.models.regression.linear_regression import LinearRegressionModel
+    from src.models.regression.ridge_regression import RidgeRegressionModel
+    from src.models.regression.lasso_regression import LassoRegressionModel
+    from src.models.neural_network import NeuralNetworkModel
+    from src.models.xgboost_model import XGBoostModel
+    from src.models.isolation_forest import IsolationForestModel
+    MODELS_AVAILABLE = True
+    print("Model imports successful")
+except ImportError as e:
+    logger.info(f"Model imports optional, continuing without: {e}")
+    MODELS_AVAILABLE = False
 
 
 class MarketRiskDashboard:
-    """Professional dashboard for market risk intelligence."""
+    """
+    Professional dashboard for market narrative risk intelligence.
+    """
     
     def __init__(self):
-        """Initialize dashboard with configuration and data connections."""
-        self.config = self._load_config()
-        self.data_paths = self.config.get('data', {}).get('data_paths', {})
+        """Initialize dashboard with professional settings."""
+        self.logger = logger
         
-        # Load data
-        self.market_data = self._load_market_data()
-        self.features = self._load_features()
-        self.models = self._load_models()
-        self.monitoring_data = self._load_monitoring_data()
-        
-    def _load_config(self) -> Dict:
-        """Load project configuration."""
         try:
-            config_path = Path("configs/project_config.yaml")
-            if not config_path.exists():
-                config_path = Path("../configs/project_config.yaml")
-            
-            if not config_path.exists():
-                logger.warning("Configuration file not found, using defaults")
-                return {
-                    'data': {
-                        'data_paths': {
-                            'raw': 'data/raw',
-                            'processed': 'data/processed',
-                            'features': 'data/features',
-                            'artifacts': 'artifacts'
-                        }
-                    }
-                }
-            
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            # Load sub-configs
-            configs_dir = config_path.parent
-            for subconfig in ['scraping', 'features', 'models', 'monitoring']:
-                sub_path = configs_dir / f"{subconfig}.yaml"
-                if sub_path.exists():
-                    with open(sub_path, 'r') as f:
-                        config[subconfig] = yaml.safe_load(f)
-            
-            logger.info("Configuration loaded successfully")
-            return config
-            
+            if config_loader:
+                self.config = config_loader.get_config("config")
+                self.colors = self.config.get('visualization', {}).get('color_palette', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+                print("Configuration loaded successfully")
+            else:
+                self.config = {}
+                self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
         except Exception as e:
-            logger.error(f"Error loading configuration: {e}")
-            return {
-                'data': {
-                    'data_paths': {
-                        'raw': 'data/raw',
-                        'processed': 'data/processed',
-                        'features': 'data/features',
-                        'artifacts': 'artifacts'
-                    }
-                }
-            }
+            logger.warning(f"Failed to load dashboard config: {e}")
+            self.config = {}
+            self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+        
+        if EDAVisualizer:
+            self.eda_visualizer = EDAVisualizer(theme="plotly_white")
+        else:
+            self.eda_visualizer = None
+        
+        self._init_session_state()
+        self.load_data()
+        self.logger.info("MarketRiskDashboard initialized successfully")
     
-    def _load_market_data(self) -> pd.DataFrame:
-        """Load latest processed or raw market data."""
+    def _init_session_state(self):
+        """Initialize session state variables."""
+        if 'data_loaded' not in st.session_state:
+            st.session_state.data_loaded = False
+        if 'current_view' not in st.session_state:
+            st.session_state.current_view = 'overview'
+        if 'filtered_data' not in st.session_state:
+            st.session_state.filtered_data = None
+        if 'model_predictions' not in st.session_state:
+            st.session_state.model_predictions = {}
+        if 'pipeline_running' not in st.session_state:
+            st.session_state.pipeline_running = False
+    
+    def load_data(self):
+        """Load prediction data from gold layer."""
         try:
-            # Try processed data first
-            processed_dir = Path(self.data_paths.get('processed', 'data/processed'))
-            if processed_dir.exists():
-                parquet_files = list(processed_dir.glob("*.parquet"))
-                csv_files = list(processed_dir.glob("*.csv"))
+            gold_dir = Path("data/gold")
+            
+            if not gold_dir.exists():
+                gold_dir.mkdir(parents=True, exist_ok=True)
+            
+            prediction_files = list(gold_dir.glob("*predictions*.parquet"))
+            
+            if prediction_files:
+                latest_file = max(prediction_files, key=lambda x: x.stat().st_mtime)
+                self.df = pd.read_parquet(latest_file)
                 
-                all_files = parquet_files + csv_files
-                if all_files:
-                    latest_file = max(all_files, key=lambda x: x.stat().st_mtime)
+                if 'timestamp' in self.df.columns:
+                    self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+                
+                if not self.df.empty and 'timestamp' in self.df.columns:
+                    self.min_date = self.df['timestamp'].min().date()
+                    self.max_date = self.df['timestamp'].max().date()
+                
+                self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
+                st.session_state.data_loaded = True
+                
+            else:
+                gold_files = list(gold_dir.glob("features_*.parquet"))
+                if gold_files:
+                    latest_file = max(gold_files, key=lambda x: x.stat().st_mtime)
+                    self.df = pd.read_parquet(latest_file)
                     
-                    if latest_file.suffix == '.parquet':
-                        df = pd.read_parquet(latest_file)
+                    if 'timestamp' in self.df.columns:
+                        self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+                        self.min_date = self.df['timestamp'].min().date()
+                        self.max_date = self.df['timestamp'].max().date()
+                    
+                    self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
+                    st.session_state.data_loaded = True
+                else:
+                    silver_dir = Path("data/silver")
+                    if silver_dir.exists():
+                        silver_files = list(silver_dir.glob("*.parquet"))
+                        if silver_files:
+                            latest_file = max(silver_files, key=lambda x: x.stat().st_mtime)
+                            self.df = pd.read_parquet(latest_file)
+                            
+                            if 'timestamp' in self.df.columns:
+                                self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+                                self.min_date = self.df['timestamp'].min().date()
+                                self.max_date = self.df['timestamp'].max().date()
+                            
+                            self.logger.info(f"Loaded {len(self.df)} records from silver layer: {latest_file}")
+                            st.session_state.data_loaded = True
+                        else:
+                            self._create_sample_data()
+                            self.logger.warning("No data files found, using sample data")
                     else:
-                        df = pd.read_csv(latest_file, parse_dates=['Date'] if 'Date' in pd.read_csv(latest_file, nrows=0).columns else False)
+                        self._create_sample_data()
+                        self.logger.warning("No data directories found, using sample data")
                     
-                    logger.info(f"Loaded processed data: {df.shape}")
-                    return df
+        except Exception as e:
+            self.logger.error(f"Failed to load data: {e}", exc_info=True)
+            self._create_sample_data()
+    
+    def _create_sample_data(self):
+        """Create sample data for demonstration."""
+        dates = pd.date_range(end=datetime.now(), periods=60, freq='D')
+        
+        np.random.seed(42)
+        base_trend = np.linspace(0, 2, len(dates))
+        seasonal = 0.5 * np.sin(2 * np.pi * np.arange(len(dates)) / 30)
+        noise = np.random.normal(0, 0.3, len(dates))
+        
+        stress_scores = base_trend + seasonal + noise
+        
+        self.df = pd.DataFrame({
+            'timestamp': dates,
+            'headline': [f"Market update {i}" for i in range(len(dates))],
+            'sentiment_polarity': np.random.uniform(-0.8, 0.8, len(dates)),
+            'keyword_stress_score': np.random.exponential(0.3, len(dates)),
+            'weighted_stress_score': stress_scores,
+            'linear_regression_prediction': stress_scores + np.random.normal(0, 0.2, len(dates)),
+            'ridge_regression_prediction': stress_scores + np.random.normal(0, 0.15, len(dates)),
+            'lasso_regression_prediction': stress_scores + np.random.normal(0, 0.18, len(dates)),
+            'neural_network_prediction': stress_scores + np.random.normal(0, 0.12, len(dates)),
+            'xgboost_risk_regime': np.random.choice(['low', 'medium', 'high'], len(dates), p=[0.3, 0.5, 0.2]),
+            'prob_low': np.random.uniform(0, 1, len(dates)),
+            'prob_medium': np.random.uniform(0, 1, len(dates)),
+            'prob_high': np.random.uniform(0, 1, len(dates)),
+            'is_anomaly': np.random.choice([0, 1], len(dates), p=[0.92, 0.08]),
+            'anomaly_score': np.random.uniform(-0.5, 0.5, len(dates)),
+            'daily_article_count': np.random.poisson(50, len(dates)),
+            'market_breadth': np.random.uniform(0, 1, len(dates))
+        })
+        
+        probs = self.df[['prob_low', 'prob_medium', 'prob_high']].values
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        self.df[['prob_low', 'prob_medium', 'prob_high']] = probs
+        
+        self.min_date = self.df['timestamp'].min().date()
+        self.max_date = self.df['timestamp'].max().date()
+        
+        st.session_state.data_loaded = True
+        self.logger.info("Created sample data for demonstration")
+    
+    def _run_full_pipeline(self):
+        """Run the complete pipeline: scraping -> cleaning -> features -> models."""
+        if not PIPELINE_AVAILABLE:
+            st.error("Pipeline components not available. Cannot run full pipeline.")
+            st.info("Pipeline components missing. Try 'Quick Update' instead, which uses existing data.")
+            with st.expander("Why is this happening?"):
+                st.write("""
+                The full pipeline requires:
+                - src.scraper (for data collection)
+                - src.preprocessing.clean_data
+                - src.preprocessing.feature_engineering
+                
+                These modules may not be deployed or have import errors.
+                Use 'Quick Update' button instead to update predictions with existing data.
+                """)
+            return False
+        
+        if not MODELS_AVAILABLE:
+            st.warning("Some model imports failed. Pipeline will use available models only.")
+            # Continue anyway with available models
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        try:
+            status_text.text("Step 1/4: Scraping news articles...")
+            progress_bar.progress(10)
+            self.logger.info("Starting scraping phase")
             
-            # Fallback to raw data
-            raw_dir = Path(self.data_paths.get('raw', 'data/raw'))
-            if not raw_dir.exists():
-                return pd.DataFrame()
+            bronze_path = scrape_and_save()
             
-            files = list(raw_dir.glob("*.parquet"))
-            if not files:
-                return pd.DataFrame()
+            if not bronze_path:
+                st.error("Scraping failed. No data collected.")
+                return False
             
-            # Get latest file per ticker
-            latest_files = {}
-            for f in files:
+            self.logger.info(f"Scraping completed: {bronze_path}")
+            progress_bar.progress(25)
+            
+            status_text.text("Step 2/4: Cleaning and validating data...")
+            progress_bar.progress(30)
+            self.logger.info("Starting cleaning phase")
+            
+            silver_path = clean_and_save(bronze_path)
+            
+            if not silver_path:
+                st.error("Data cleaning failed.")
+                return False
+            
+            self.logger.info(f"Cleaning completed: {silver_path}")
+            progress_bar.progress(50)
+            
+            status_text.text("Step 3/4: Engineering features...")
+            progress_bar.progress(55)
+            self.logger.info("Starting feature engineering")
+            
+            gold_path = engineer_and_save(silver_path)
+            
+            if not gold_path:
+                st.error("Feature engineering failed.")
+                return False
+            
+            self.logger.info(f"Feature engineering completed: {gold_path}")
+            progress_bar.progress(70)
+            
+            status_text.text("Step 4/4: Training models and generating predictions...")
+            progress_bar.progress(75)
+            self.logger.info("Starting model training")
+            
+            df = pd.read_parquet(gold_path)
+            
+            models = {
+                'linear_regression': LinearRegressionModel(),
+                'ridge_regression': RidgeRegressionModel(),
+                'lasso_regression': LassoRegressionModel(),
+                'neural_network': NeuralNetworkModel(),
+                'xgboost': XGBoostModel(),
+                'isolation_forest': IsolationForestModel()
+            }
+            
+            predictions_dfs = []
+            model_count = len(models)
+            
+            for idx, (model_name, model) in enumerate(models.items()):
                 try:
-                    ticker = f.stem.split('_')[0]
-                    if ticker not in latest_files or f.stat().st_mtime > latest_files[ticker].stat().st_mtime:
-                        latest_files[ticker] = f
-                except:
+                    status_text.text(f"Training {model_name} ({idx+1}/{model_count})...")
+                    progress = 75 + int((idx / model_count) * 15)
+                    progress_bar.progress(progress)
+                    
+                    self.logger.info(f"Training {model_name}")
+                    
+                    results = model.train(df)
+                    predictions = model.predict(df)
+                    
+                    pred_cols = [col for col in predictions.columns 
+                               if any(x in col for x in ['prediction', 'regime', 'anomaly', 'similarity', 'forecast'])]
+                    
+                    if pred_cols:
+                        predictions_subset = predictions[['timestamp'] + pred_cols]
+                        predictions_dfs.append(predictions_subset)
+                        self.logger.info(f"{model_name} completed successfully")
+                    
+                    model_dir = Path("models")
+                    model_dir.mkdir(exist_ok=True)
+                    model.save(model_dir / f"{model_name}_{timestamp}.joblib")
+                    
+                except Exception as e:
+                    self.logger.error(f"{model_name} training failed: {e}")
                     continue
             
-            # Merge data
-            dfs = []
-            for ticker, fpath in latest_files.items():
-                df = pd.read_parquet(fpath)
+            progress_bar.progress(90)
+            status_text.text("Merging predictions...")
+            
+            if predictions_dfs:
+                final_predictions = df[['timestamp']].copy()
                 
-                if 'Date' in df.columns:
-                    df['Date'] = pd.to_datetime(df['Date'])
-                else:
-                    df = df.reset_index()
-                    if 'Date' in df.columns:
-                        df['Date'] = pd.to_datetime(df['Date'])
+                for pred_df in predictions_dfs:
+                    final_predictions = final_predictions.merge(
+                        pred_df,
+                        on='timestamp',
+                        how='left'
+                    )
                 
-                # Rename columns to ticker_column format
-                rename_map = {}
-                for col in df.columns:
-                    if col != 'Date':
-                        clean_col = col.replace('Adj Close', 'AdjClose').replace(' ', '_')
-                        rename_map[col] = f"{ticker}_{clean_col}"
+                feature_cols = [col for col in df.columns if col != 'timestamp']
+                final_predictions = final_predictions.merge(
+                    df[['timestamp'] + feature_cols],
+                    on='timestamp',
+                    how='left'
+                )
                 
-                df = df.rename(columns=rename_map)
+                predictions_path = Path("data/gold") / f"predictions_{timestamp}.parquet"
+                final_predictions.to_parquet(predictions_path, index=False)
                 
-                if 'Date' in df.columns:
-                    df = df.set_index('Date')
+                self.logger.info(f"Predictions saved to: {predictions_path}")
                 
-                dfs.append(df)
-            
-            if not dfs:
-                return pd.DataFrame()
-            
-            market_df = pd.concat(dfs, axis=1).sort_index()
-            market_df = market_df.reset_index()
-            
-            logger.info(f"Loaded and merged raw data: {market_df.shape}")
-            return market_df
-            
-        except Exception as e:
-            logger.error(f"Error loading market data: {e}")
-            return pd.DataFrame()
-    
-    def _load_features(self) -> pd.DataFrame:
-        """Load latest engineered features."""
-        try:
-            features_dir = Path(self.data_paths.get('features', 'data/features'))
-            if not features_dir.exists():
-                return pd.DataFrame()
-            
-            feature_files = list(features_dir.glob("*features*.parquet")) + list(features_dir.glob("*features*.csv"))
-            
-            if not feature_files:
-                return pd.DataFrame()
-            
-            latest_features = max(feature_files, key=lambda x: x.stat().st_mtime)
-            
-            if latest_features.suffix == '.parquet':
-                df = pd.read_parquet(latest_features)
+                progress_bar.progress(100)
+                status_text.text("Pipeline completed successfully!")
+                
+                return True
             else:
-                df = pd.read_csv(latest_features)
-            
-            if 'Date' in df.columns:
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-            
-            logger.info(f"Loaded features: {df.shape}")
-            return df
-            
+                st.error("No models produced predictions")
+                return False
+                
         except Exception as e:
-            logger.error(f"Error loading features: {e}")
-            return pd.DataFrame()
+            self.logger.error(f"Pipeline failed: {e}", exc_info=True)
+            st.error(f"Pipeline error: {e}")
+            return False
+            
+        finally:
+            progress_bar.empty()
+            status_text.empty()
     
-    def _load_models(self) -> Dict:
-        """Load trained models and metadata."""
-        models = {}
-        try:
-            artifacts_dir = Path(self.data_paths.get('artifacts', 'artifacts')) / 'models'
-            if not artifacts_dir.exists():
-                return models
-            
-            # Load models
-            for model_type in ['volatility', 'regime', 'anomaly']:
-                model_files = list(artifacts_dir.glob(f"{model_type}_model_*.pkl"))
-                if model_files:
-                    latest = max(model_files, key=lambda x: x.stat().st_mtime)
-                    with open(latest, 'rb') as f:
-                        models[model_type] = pickle.load(f)
-            
-            # Load metrics
-            metrics_dir = Path(self.data_paths.get('artifacts', 'artifacts'))
-            metrics_files = list(metrics_dir.glob("*metrics*.json"))
-            if metrics_files:
-                latest_metrics = max(metrics_files, key=lambda x: x.stat().st_mtime)
-                with open(latest_metrics, 'r') as f:
-                    models['metrics'] = json.load(f)
-            
-            logger.info(f"Loaded {len(models)} model components")
-            return models
-            
-        except Exception as e:
-            logger.error(f"Error loading models: {e}")
-            return models
-    
-    def _load_monitoring_data(self) -> Dict:
-        """Load monitoring and drift detection data."""
-        monitoring_data = {}
-        try:
-            artifacts_dir = Path(self.data_paths.get('artifacts', 'artifacts'))
-            drift_files = list(artifacts_dir.glob("*drift*.json")) + list(artifacts_dir.glob("*monitoring*.json"))
-            
-            for drift_file in drift_files[-3:]:
-                try:
-                    with open(drift_file, 'r') as f:
-                        data = json.load(f)
-                        report_date = drift_file.stem.split('_')[-1]
-                        monitoring_data[report_date] = data
-                except:
-                    continue
-            
-            return monitoring_data
-            
-        except Exception as e:
-            logger.error(f"Error loading monitoring data: {e}")
-            return monitoring_data
-    
-    def render_header(self):
-        """Render dashboard header."""
-        st.markdown('<h1 class="main-header">Market Risk Intelligence Platform</h1>', unsafe_allow_html=True)
-        st.markdown("Real-time risk monitoring and volatility analysis")
-        
-        # Status indicators
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            if not self.market_data.empty:
-                data_date = self.market_data['Date'].max() if 'Date' in self.market_data.columns else datetime.now()
-                st.info(f"Data updated: {data_date.strftime('%Y-%m-%d')}")
-            else:
-                st.warning("No data available")
-        
-        with col2:
-            st.info(f"Assets tracked: {len([c for c in self.market_data.columns if 'AdjClose' in str(c)])}")
-        
-        with col3:
-            model_count = len([k for k in self.models.keys() if k != 'metrics'])
-            st.info(f"Models loaded: {model_count}")
-        
-        with col4:
-            st.info(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
-    
-    def render_sidebar(self):
-        """Render sidebar controls."""
-        with st.sidebar:
-            st.title("Controls")
-            
-            st.markdown("### Data Pipeline")
-            if st.button("Run Data Pipeline", type="primary"):
-                self._run_data_pipeline()
-            
-            if st.button("Refresh Data"):
-                st.rerun()
-            
-            st.markdown("---")
-            
-            st.markdown("### Analysis Settings")
-            st.date_input("Start Date", datetime.now() - timedelta(days=365))
-            st.date_input("End Date", datetime.now())
-            
-            st.markdown("---")
-            
-            st.markdown("### System Information")
-            if not self.market_data.empty:
-                st.caption(f"Records: {len(self.market_data):,}")
-                if 'Date' in self.market_data.columns:
-                    date_range = f"{self.market_data['Date'].min().date()} to {self.market_data['Date'].max().date()}"
-                    st.caption(f"Date range: {date_range}")
-            else:
-                st.caption("No data loaded")
-    
-    def _run_data_pipeline(self):
-        """Execute data scraping pipeline."""
-        try:
-            from pipelines.scraping_pipeline import run_scraping_pipeline
-            
-            with st.spinner("Fetching market data..."):
-                result = run_scraping_pipeline(self.config)
-                
-                if result:
-                    st.success("Data pipeline completed successfully")
-                    st.rerun()
-                else:
-                    st.error("Data pipeline failed. Check logs for details.")
-                    
-        except Exception as e:
-            st.error(f"Pipeline error: {str(e)}")
-            logger.error(f"Pipeline execution failed: {e}")
-    
-    def render_market_overview(self):
-        """Render market overview section."""
-        st.markdown('<h2 class="section-header">Market Overview</h2>', unsafe_allow_html=True)
-        
-        if self.market_data.empty:
-            st.markdown('<div class="warning-box">Market data not available. Please run the data pipeline to fetch data.</div>', unsafe_allow_html=True)
-            return
-        
-        # Calculate key metrics
-        metrics = self._calculate_market_metrics()
-        
-        # Display key metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            self._render_metric_card("Market Return (YTD)", 
-                                    metrics.get('ytd_return', 'N/A'),
-                                    metrics.get('return_trend', ''))
-        
-        with col2:
-            self._render_metric_card("Current Volatility", 
-                                    metrics.get('current_volatility', 'N/A'),
-                                    metrics.get('volatility_trend', ''))
-        
-        with col3:
-            risk_level = metrics.get('risk_level', 'Medium')
-            alert_class = 'alert-high' if risk_level == 'High' else 'alert-medium' if risk_level == 'Medium' else 'alert-low'
-            self._render_metric_card("Risk Level", risk_level, 
-                                    metrics.get('risk_change', ''), alert_class)
-        
-        with col4:
-            self._render_metric_card("Average Correlation", 
-                                    metrics.get('avg_correlation', 'N/A'),
-                                    metrics.get('correlation_trend', ''))
-        
-        # Charts
-        st.markdown("#### Performance Analysis")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig = self._create_market_performance_chart()
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            fig = self._create_sector_performance_chart()
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Asset metrics table
-        st.markdown("#### Asset Metrics")
-        metrics_df = self._create_metrics_table()
-        if not metrics_df.empty:
-            st.dataframe(metrics_df, use_container_width=True, hide_index=True)
-    
-    def render_risk_analysis(self):
-        """Render risk analysis section."""
-        st.markdown('<h2 class="section-header">Risk Analysis</h2>', unsafe_allow_html=True)
-        
-        if self.market_data.empty:
-            st.markdown('<div class="info-box">Load market data to view risk analysis</div>', unsafe_allow_html=True)
-            return
-        
-        # Asset selector
-        assets = [c.split('_')[0] for c in self.market_data.columns if 'AdjClose' in str(c)]
-        
-        if not assets:
-            st.warning("No assets available for analysis")
-            return
-        
-        selected_asset = st.selectbox("Select Asset for Analysis", assets)
-        
-        if selected_asset:
-            col_name = f"{selected_asset}_AdjClose"
-            stats = self._calculate_var_metrics(col_name)
-            
-            if stats:
-                # Risk metrics
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Value at Risk (95%)", f"{stats['var']:.2%}")
-                
-                with col2:
-                    st.metric("Expected Shortfall (CVaR)", f"{stats['cvar']:.2%}")
-                
-                with col3:
-                    st.metric("Maximum Drawdown", f"{stats['max_drawdown']:.2%}")
-                
-                # Visualization tabs
-                tab1, tab2 = st.tabs(["Return Distribution", "Drawdown Analysis"])
-                
-                with tab1:
-                    fig = self._create_return_distribution(stats)
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with tab2:
-                    fig = self._create_drawdown_chart(stats)
-                    st.plotly_chart(fig, use_container_width=True)
-    
-    def render_model_performance(self):
-        """Render model performance section."""
-        st.markdown('<h2 class="section-header">Model Performance</h2>', unsafe_allow_html=True)
-        
-        if not self.models:
-            st.markdown('<div class="info-box">No trained models available. Run the training pipeline to enable predictive analytics.</div>', unsafe_allow_html=True)
-            
-            # Show expected models
-            st.markdown("#### Expected Model Components")
-            expected_models = pd.DataFrame({
-                "Model Type": ["Volatility Forecasting", "Regime Detection", "Anomaly Detection"],
-                "Purpose": ["Predict future market volatility", "Identify market regimes", "Detect unusual market behavior"],
-                "Status": ["Not trained", "Not trained", "Not trained"]
-            })
-            st.table(expected_models)
-            
-            return
-        
-        st.success(f"Loaded {len([k for k in self.models.keys() if k != 'metrics'])} trained models")
-        
-        # Model information
-        model_info = []
-        for name, model_data in self.models.items():
-            if name != 'metrics':
-                model_info.append({
-                    "Model Type": name.title(),
-                    "Status": "Active",
-                    "Last Updated": "Available"
-                })
-        
-        if model_info:
-            st.table(pd.DataFrame(model_info))
-        
-        # Model metrics if available
-        if 'metrics' in self.models:
-            st.markdown("#### Performance Metrics")
-            metrics = self.models['metrics']
-            
-            cols = st.columns(3)
-            for idx, (metric_name, metric_value) in enumerate(metrics.items()):
-                with cols[idx % 3]:
-                    if isinstance(metric_value, dict):
-                        for k, v in metric_value.items():
-                            st.metric(f"{metric_name} - {k}", f"{v:.4f}" if isinstance(v, float) else str(v))
-                    else:
-                        st.metric(metric_name, f"{metric_value:.4f}" if isinstance(metric_value, float) else str(metric_value))
-    
-    # Helper methods
-    
-    def _render_metric_card(self, title: str, value: str, change: str, alert_class: str = ""):
-        """Render a metric card."""
-        st.markdown(f"""
-        <div class="metric-card {alert_class}">
-            <div class="metric-title">{title}</div>
-            <div class="metric-value">{value}</div>
-            <div class="metric-change">{change}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    def _calculate_market_metrics(self) -> Dict:
-        """Calculate key market metrics."""
-        metrics = {}
-        
-        if self.market_data.empty or 'Date' not in self.market_data.columns:
-            return metrics
+    def _run_quick_update(self):
+        """Run quick update using existing data with lightweight models - NO pipeline dependencies needed."""
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
         try:
-            price_cols = [col for col in self.market_data.columns if 'AdjClose' in str(col)]
-            if not price_cols:
-                return metrics
+            status_text.text("Loading existing data...")
+            progress_bar.progress(10)
             
-            # Use SPY or first available ticker
-            target_col = next((c for c in price_cols if 'SPY' in c), price_cols[0])
+            # Check if we have any data
+            if not hasattr(self, 'df') or self.df is None or self.df.empty:
+                st.error("No data available. Please ensure data files exist in data/gold/, data/silver/, or data/bronze/")
+                return False
             
-            # YTD return
-            prices = self.market_data[['Date', target_col]].dropna()
-            prices['Date'] = pd.to_datetime(prices['Date'])
-            current_year = datetime.now().year
-            ytd_mask = prices['Date'].dt.year == current_year
+            df = self.df.copy()
+            df = df.tail(500)
             
-            if ytd_mask.any():
-                ytd_prices = prices[ytd_mask]
-                if len(ytd_prices) > 1:
-                    ytd_return = (ytd_prices.iloc[-1][target_col] / ytd_prices.iloc[0][target_col]) - 1
-                    metrics['ytd_return'] = f"{ytd_return:.2%}"
-                    metrics['return_trend'] = "Positive" if ytd_return > 0 else "Negative"
+            status_text.text("Engineering features...")
+            progress_bar.progress(30)
             
-            # Volatility
-            returns = np.log(prices[target_col] / prices[target_col].shift(1)).dropna()
-            if len(returns) >= 20:
-                current_vol = returns.tail(20).std() * np.sqrt(252)
-                metrics['current_volatility'] = f"{current_vol:.2%}"
-                
-                # Risk level
-                if current_vol < 0.15:
-                    metrics['risk_level'] = 'Low'
-                elif current_vol < 0.25:
-                    metrics['risk_level'] = 'Medium'
-                else:
-                    metrics['risk_level'] = 'High'
+            if 'sentiment_polarity' in df.columns:
+                df['sentiment_ma_7'] = df['sentiment_polarity'].rolling(7, min_periods=1).mean()
             
-            # Correlation
-            if len(price_cols) >= 3:
-                price_data = self.market_data[price_cols[:5]].dropna()
-                returns_data = np.log(price_data / price_data.shift(1)).dropna()
-                if not returns_data.empty:
-                    corr_matrix = returns_data.corr()
-                    avg_corr = corr_matrix.values[np.triu_indices_from(corr_matrix, k=1)].mean()
-                    metrics['avg_correlation'] = f"{avg_corr:.3f}"
+            if 'keyword_stress_score' in df.columns:
+                df['stress_ma_7'] = df['keyword_stress_score'].rolling(7, min_periods=1).mean()
             
-            return metrics
+            status_text.text("Training lightweight models...")
+            progress_bar.progress(50)
             
-        except Exception as e:
-            logger.error(f"Error calculating metrics: {e}")
-            return metrics
-    
-    def _calculate_var_metrics(self, ticker_col: str) -> Optional[Dict]:
-        """Calculate Value at Risk metrics."""
-        if ticker_col not in self.market_data.columns:
-            return None
-        
-        try:
-            prices = self.market_data[['Date', ticker_col]].dropna()
-            prices['Date'] = pd.to_datetime(prices['Date'])
-            prices = prices.set_index('Date')[ticker_col]
+            from sklearn.linear_model import LinearRegression, Ridge
             
-            returns = prices.pct_change().dropna()
+            feature_cols = [col for col in df.columns if col not in [
+                'timestamp', 'headline', 'weighted_stress_score'
+            ]]
             
-            # VaR and CVaR
-            var_95 = np.percentile(returns, 5)
-            cvar_95 = returns[returns <= var_95].mean()
+            X = df[feature_cols].select_dtypes(include=[np.number]).fillna(0)
+            y = df['weighted_stress_score'] if 'weighted_stress_score' in df.columns else np.random.rand(len(df))
             
-            # Maximum drawdown
-            cumulative = (1 + returns).cumprod()
-            running_max = cumulative.expanding().max()
-            drawdown = (cumulative - running_max) / running_max
-            max_drawdown = drawdown.min()
+            predictions = df.copy()
             
-            return {
-                'var': var_95,
-                'cvar': cvar_95,
-                'max_drawdown': max_drawdown,
-                'returns': returns,
-                'prices': prices,
-                'drawdown': drawdown
-            }
-        except Exception as e:
-            logger.error(f"Error calculating VaR: {e}")
-            return None
-    
-    def _create_market_performance_chart(self):
-        """Create market performance chart."""
-        fig = go.Figure()
-        
-        if self.market_data.empty or 'Date' not in self.market_data.columns:
-            return fig
-        
-        try:
-            price_cols = [col for col in self.market_data.columns if 'AdjClose' in str(col)][:3]
+            lr_model = LinearRegression()
+            lr_model.fit(X, y)
+            predictions['linear_regression_prediction'] = lr_model.predict(X)
             
-            for col in price_cols:
-                prices = self.market_data[['Date', col]].dropna()
-                if len(prices) > 0:
-                    ticker = str(col).split('_')[0]
-                    normalized = (prices[col] / prices[col].iloc[0]) * 100
-                    
-                    fig.add_trace(go.Scatter(
-                        x=prices['Date'],
-                        y=normalized,
-                        name=ticker,
-                        mode='lines',
-                        line=dict(width=2)
-                    ))
+            progress_bar.progress(70)
             
-            fig.update_layout(
-                title="Normalized Performance",
-                xaxis_title="Date",
-                yaxis_title="Normalized Price (Base=100)",
-                hovermode='x unified',
-                height=400,
-                template="plotly_white"
+            ridge_model = Ridge(alpha=1.0)
+            ridge_model.fit(X, y)
+            predictions['ridge_regression_prediction'] = ridge_model.predict(X)
+            
+            status_text.text("Generating risk classifications...")
+            progress_bar.progress(85)
+            
+            stress_values = predictions.get('weighted_stress_score', y)
+            predictions['xgboost_risk_regime'] = pd.cut(
+                stress_values,
+                bins=[-np.inf, 0.3, 0.7, np.inf],
+                labels=['low', 'medium', 'high']
             )
             
-        except Exception as e:
-            logger.error(f"Error creating chart: {e}")
-        
-        return fig
-    
-    def _create_sector_performance_chart(self):
-        """Create sector performance chart."""
-        fig = go.Figure()
-        
-        try:
-            sectors = ['XLF', 'XLK', 'XLV', 'XLE', 'XLY', 'XLI']
-            sector_returns = []
-            sector_names = []
+            predictions['prob_low'] = (stress_values < 0.3).astype(float)
+            predictions['prob_medium'] = ((stress_values >= 0.3) & (stress_values < 0.7)).astype(float)
+            predictions['prob_high'] = (stress_values >= 0.7).astype(float)
             
-            for sector in sectors:
-                col = f"{sector}_AdjClose"
-                if col in self.market_data.columns:
-                    prices = self.market_data[['Date', col]].dropna()
-                    if len(prices) >= 20:
-                        recent_return = (prices[col].iloc[-1] / prices[col].iloc[-20] - 1) * 100
-                        sector_names.append(sector)
-                        sector_returns.append(recent_return)
+            z_scores = np.abs((stress_values - stress_values.mean()) / stress_values.std())
+            predictions['is_anomaly'] = (z_scores > 2).astype(int)
+            predictions['anomaly_score'] = z_scores
             
-            if sector_returns:
-                colors = ['#DC2626' if x < 0 else '#10B981' for x in sector_returns]
+            status_text.text("Saving predictions...")
+            progress_bar.progress(95)
+            
+            gold_dir = Path("data/gold")
+            gold_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = gold_dir / f"predictions_{timestamp}.parquet"
+            
+            predictions.to_parquet(output_file)
+            
+            self.logger.info(f"Quick update saved to: {output_file}")
+            
+            progress_bar.progress(100)
+            status_text.text("Update completed successfully!")
+            
+            return True
                 
-                fig.add_trace(go.Bar(
-                    x=sector_names,
-                    y=sector_returns,
-                    marker_color=colors,
-                    text=[f"{x:.1f}%" for x in sector_returns],
-                    textposition='auto'
-                ))
-                
-                fig.update_layout(
-                    title="Sector Performance (20-Day)",
-                    xaxis_title="Sector",
-                    yaxis_title="Return (%)",
-                    height=400,
-                    template="plotly_white"
-                )
-        
         except Exception as e:
-            logger.error(f"Error creating sector chart: {e}")
-        
-        return fig
+            st.error(f"Quick update failed: {e}")
+            self.logger.error(f"Quick update failed: {e}", exc_info=True)
+            return False
+            
+        finally:
+            progress_bar.empty()
+            status_text.empty()
     
-    def _create_return_distribution(self, stats: Dict):
-        """Create return distribution chart."""
-        fig = go.Figure()
+    def render_header(self):
+        """Render professional header."""
+        col1, col2, col3 = st.columns([1, 2, 1])
         
-        returns = stats['returns']
+        with col2:
+            st.markdown("""
+            <div style='text-align: center; padding: 20px 0;'>
+                <h1 style='margin-bottom: 5px; color: #2c3e50;'>Market Narrative Risk Intelligence System</h1>
+                <p style='color: #7f8c8d; font-size: 1.1em; margin-top: 0;'>
+                Advanced analytics for market stress detection and risk regime identification
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
         
-        fig.add_trace(go.Histogram(
-            x=returns,
-            nbinsx=50,
-            name='Returns',
-            marker_color='#3B82F6',
-            opacity=0.7
-        ))
-        
-        # Add VaR line
-        fig.add_vline(
-            x=stats['var'],
-            line_dash="dash",
-            line_color="#DC2626",
-            annotation_text=f"VaR 95%: {stats['var']:.2%}"
-        )
-        
-        fig.update_layout(
-            title="Return Distribution",
-            xaxis_title="Returns",
-            yaxis_title="Frequency",
-            height=400,
-            template="plotly_white"
-        )
-        
-        return fig
+        st.markdown("---")
     
-    def _create_drawdown_chart(self, stats: Dict):
-        """Create drawdown chart."""
-        fig = go.Figure()
-        
-        drawdown = stats['drawdown']
-        
-        fig.add_trace(go.Scatter(
-            x=drawdown.index,
-            y=drawdown * 100,
-            fill='tozeroy',
-            fillcolor='rgba(239, 68, 68, 0.3)',
-            line=dict(color='#DC2626', width=2),
-            name='Drawdown'
-        ))
-        
-        fig.update_layout(
-            title="Drawdown Analysis",
-            xaxis_title="Date",
-            yaxis_title="Drawdown (%)",
-            height=400,
-            template="plotly_white"
-        )
-        
-        return fig
-    
-    def _create_metrics_table(self):
-        """Create asset metrics table."""
-        try:
-            if self.market_data.empty:
-                return pd.DataFrame()
+    def render_sidebar(self):
+        """Render professional sidebar with filters and navigation."""
+        with st.sidebar:
+            gold_dir = Path("data/gold")
+            data_status = "No data"
+            data_time = "Never"
             
-            metrics = []
-            price_cols = [col for col in self.market_data.columns if 'AdjClose' in str(col)][:8]
+            if gold_dir.exists():
+                files = list(gold_dir.glob("*.parquet"))
+                if files:
+                    latest = max(files, key=lambda x: x.stat().st_mtime)
+                    mod_time = datetime.fromtimestamp(latest.stat().st_mtime)
+                    data_status = "Available"
+                    data_time = mod_time.strftime("%Y-%m-%d %H:%M")
             
-            for col in price_cols:
-                ticker = str(col).split('_')[0]
-                prices = self.market_data[['Date', col]].dropna()
-                
-                if len(prices) >= 20:
-                    returns = np.log(prices[col] / prices[col].shift(1)).dropna()
-                    ret_20d = (prices[col].iloc[-1] / prices[col].iloc[-20] - 1) * 100
-                    volatility = returns.tail(20).std() * np.sqrt(252) * 100
-                    
-                    metrics.append({
-                        'Ticker': ticker,
-                        'Current Price': f"${prices[col].iloc[-1]:.2f}",
-                        '20-Day Return': f"{ret_20d:+.2f}%",
-                        'Volatility': f"{volatility:.2f}%"
-                    })
+            st.markdown(f"""
+            <div style='padding: 10px; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px;'>
+                <p style='font-size: 0.9em; color: #6c757d; margin: 0;'>
+                <strong>System Status:</strong> Operational<br>
+                <strong>Data Status:</strong> {data_status}<br>
+                <strong>Last Updated:</strong> {data_time}<br>
+                <strong>Records Loaded:</strong> {len(self.df) if hasattr(self, 'df') else 0:,}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            return pd.DataFrame(metrics)
-            
-        except Exception as e:
-            logger.error(f"Error creating table: {e}")
-            return pd.DataFrame()
-    
-    def run_dashboard(self):
-        """Main dashboard execution."""
-        try:
-            # Render sidebar
-            self.render_sidebar()
-            
-            # Render header
-            self.render_header()
-            
-            if self.market_data.empty:
-                st.markdown('<div class="warning-box">No market data available. Click "Run Data Pipeline" in the sidebar to fetch data.</div>', unsafe_allow_html=True)
-                return
-            
-            # Create tabs
-            tab1, tab2, tab3 = st.tabs([
-                "Market Overview",
-                "Risk Analysis",
-                "Model Performance"
-            ])
-            
-            with tab1:
-                self.render_market_overview()
-            
-            with tab2:
-                self.render_risk_analysis()
-            
-            with tab3:
-                self.render_model_performance()
-            
-            # Footer
             st.markdown("---")
+            st.markdown("### Pipeline Control")
+            
+            # Show pipeline status
+            if PIPELINE_AVAILABLE:
+                st.success("Pipeline: Available")
+            else:
+                st.warning("Pipeline: Not Available")
+            
+            if MODELS_AVAILABLE:
+                st.success("Models: Available")
+            else:
+                st.warning("Models: Limited")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                st.caption(f"Data records: {len(self.market_data):,}")
-                st.caption(f"Features: {len(self.features.columns) if not self.features.empty else 0}")
+                full_disabled = not PIPELINE_AVAILABLE
+                if st.button("Full Update", type="primary", use_container_width=True, 
+                           disabled=full_disabled,
+                           help="Run complete pipeline with new data scraping (5-10 min)" if not full_disabled else "Pipeline components not available"):
+                    with st.spinner("Running full pipeline... This may take 5-10 minutes."):
+                        success = self._run_full_pipeline()
+                        if success:
+                            self.load_data()
+                            st.success("Full pipeline completed! Refreshing dashboard...")
+                            import time
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("Pipeline failed. Check logs for details.")
             
             with col2:
-                st.caption(f"Models loaded: {len([k for k in self.models.keys() if k != 'metrics'])}")
-                st.caption("Market Risk Intelligence Platform")
+                if st.button("Quick Update", use_container_width=True, help="Fast update with existing data (1-2 min) - Always available"):
+                    with st.spinner("Running quick update..."):
+                        success = self._run_quick_update()
+                        if success:
+                            self.load_data()
+                            st.success("Quick update completed! Refreshing...")
+                            import time
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("Update failed.")
+            
+            if st.button("Refresh View", use_container_width=True):
+                st.rerun()
+            
+            st.caption("Full Update: Scrapes new data (requires pipeline)")
+            st.caption("Quick Update: Uses existing data (always works)")
+            st.caption("Refresh View: Reloads current data")
+            
+            st.markdown("---")
+            st.markdown("### Navigation")
+            
+            view_options = {
+                'overview': 'System Overview',
+                'stress_analysis': 'Stress Score Analysis',
+                'risk_regimes': 'Risk Regime Classification',
+                'anomaly_detection': 'Anomaly Detection',
+                'historical_similarity': 'Historical Similarity',
+                'model_performance': 'Model Performance',
+                'feature_analysis': 'Feature Analysis',
+                'data_export': 'Data Export'
+            }
+            
+            selected_view = st.selectbox(
+                "Select Dashboard View",
+                options=list(view_options.keys()),
+                format_func=lambda x: view_options[x],
+                key='view_selector'
+            )
+            st.session_state.current_view = selected_view
+            
+            st.markdown("---")
+            st.markdown("### Data Filters")
+            
+            if hasattr(self, 'min_date') and hasattr(self, 'max_date'):
+                date_diff = (self.max_date - self.min_date).days
+                
+                if date_diff > 30:
+                    default_start = self.max_date - timedelta(days=30)
+                    default_end = self.max_date
+                else:
+                    default_start = self.min_date
+                    default_end = self.max_date
+                
+                date_range = st.date_input(
+                    "Analysis Period",
+                    value=(default_start, default_end),
+                    min_value=self.min_date,
+                    max_value=self.max_date
+                )
+                
+                if len(date_range) == 2:
+                    self.start_date, self.end_date = date_range
+                else:
+                    self.start_date = self.end_date = date_range[0] if date_range else self.max_date
+            else:
+                self.start_date = self.end_date = datetime.now().date()
+            
+            if 'xgboost_risk_regime' in self.df.columns:
+                risk_regimes = ['All'] + sorted(self.df['xgboost_risk_regime'].dropna().unique().tolist())
+                selected_regime = st.selectbox(
+                    "Risk Regime Filter",
+                    risk_regimes,
+                    index=0
+                )
+                self.selected_regime = selected_regime if selected_regime != 'All' else None
+            else:
+                self.selected_regime = None
+            
+            if 'is_anomaly' in self.df.columns:
+                anomaly_filter = st.radio(
+                    "Anomaly Filter",
+                    ['All Data', 'Anomalies Only', 'Exclude Anomalies'],
+                    index=0
+                )
+                self.anomaly_filter = anomaly_filter
+            else:
+                self.anomaly_filter = 'All Data'
+            
+            confidence_threshold = st.slider(
+                "Minimum Confidence Threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.7,
+                step=0.05,
+                help="Filter predictions by model confidence"
+            )
+            self.confidence_threshold = confidence_threshold
+            
+            st.markdown("---")
+            
+            with st.expander("Data Statistics", expanded=False):
+                if st.session_state.data_loaded:
+                    total_records = len(self.df)
+                    filtered_df = self._apply_filters(self.df)
+                    filtered_records = len(filtered_df)
+                    
+                    st.metric("Total Records", f"{total_records:,}")
+                    st.metric("Filtered Records", f"{filtered_records:,}")
+                    
+                    if 'xgboost_risk_regime' in filtered_df.columns:
+                        regime_counts = filtered_df['xgboost_risk_regime'].value_counts()
+                        for regime, count in regime_counts.items():
+                            st.metric(f"{regime.title()} Risk", f"{count:,}")
+    
+    def _apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply all sidebar filters to data."""
+        filtered_df = df.copy()
+        
+        if 'timestamp' in filtered_df.columns:
+            filtered_df = filtered_df[
+                (filtered_df['timestamp'].dt.date >= self.start_date) &
+                (filtered_df['timestamp'].dt.date <= self.end_date)
+            ]
+        
+        if self.selected_regime and 'xgboost_risk_regime' in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df['xgboost_risk_regime'] == self.selected_regime]
+        
+        if 'is_anomaly' in filtered_df.columns:
+            if self.anomaly_filter == 'Anomalies Only':
+                filtered_df = filtered_df[filtered_df['is_anomaly'] == 1]
+            elif self.anomaly_filter == 'Exclude Anomalies':
+                filtered_df = filtered_df[filtered_df['is_anomaly'] == 0]
+        
+        prob_cols = [col for col in filtered_df.columns if col.startswith('prob_')]
+        if prob_cols:
+            max_probs = filtered_df[prob_cols].max(axis=1)
+            filtered_df = filtered_df[max_probs >= self.confidence_threshold]
+        
+        return filtered_df
+    
+    def render_overview(self):
+        """Render system overview dashboard."""
+        st.markdown("## System Overview")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data matches current filters. Please adjust your filter settings.")
+            return
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if 'weighted_stress_score' in filtered_df.columns:
+                current_stress = filtered_df['weighted_stress_score'].iloc[-1] if len(filtered_df) > 0 else 0
+                avg_stress = filtered_df['weighted_stress_score'].mean()
+                st.metric(
+                    "Current Stress Score",
+                    f"{current_stress:.2f}",
+                    f"{current_stress - avg_stress:+.2f} vs avg"
+                )
+            else:
+                st.info("Stress score data not available")
+        
+        with col2:
+            if 'xgboost_risk_regime' in filtered_df.columns:
+                current_regime = filtered_df['xgboost_risk_regime'].iloc[-1] if len(filtered_df) > 0 else "Unknown"
+                regime_color = {
+                    'low': 'green',
+                    'medium': 'orange',
+                    'high': 'red'
+                }.get(current_regime, 'gray')
+                
+                st.markdown(f"""
+                <div style='text-align: center; padding: 10px;'>
+                    <div style='font-size: 0.9em; color: #6c757d;'>Current Risk Regime</div>
+                    <div style='font-size: 1.5em; font-weight: bold; color: {regime_color};'>{current_regime.upper()}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("Risk regime data not available")
+        
+        with col3:
+            if 'is_anomaly' in filtered_df.columns:
+                anomaly_count = int(filtered_df['is_anomaly'].sum())
+                anomaly_rate = (anomaly_count / len(filtered_df) * 100) if len(filtered_df) > 0 else 0
+                st.metric(
+                    "Anomalies Detected",
+                    f"{anomaly_count}",
+                    f"{anomaly_rate:.1f}% rate"
+                )
+            else:
+                st.info("Anomaly data not available")
+        
+        with col4:
+            total_articles = len(filtered_df)
+            date_range = (filtered_df['timestamp'].max() - filtered_df['timestamp'].min()).days if 'timestamp' in filtered_df.columns else 1
+            avg_daily = total_articles / max(date_range, 1)
+            st.metric(
+                "Articles Analyzed",
+                f"{total_articles:,}",
+                f"{avg_daily:.0f}/day avg"
+            )
+        
+        st.markdown("---")
+        
+        st.markdown("### Recent Articles")
+        display_cols = ['timestamp', 'headline', 'sentiment_polarity', 'weighted_stress_score']
+        display_cols = [col for col in display_cols if col in filtered_df.columns]
+        
+        if display_cols:
+            recent_data = filtered_df[display_cols].tail(10).copy()
+            if 'timestamp' in recent_data.columns:
+                recent_data['timestamp'] = recent_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+            st.dataframe(recent_data, width='stretch', hide_index=True)
+        else:
+            st.info("No displayable columns available in the data")
+    
+    def render_stress_analysis(self):
+        """Render detailed stress analysis view."""
+        st.markdown("## Stress Analysis")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available for stress analysis")
+            return
+        
+        if 'weighted_stress_score' not in filtered_df.columns:
+            st.info("Stress score data not yet available. Run the pipeline to generate predictions.")
+            return
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=filtered_df['timestamp'],
+            y=filtered_df['weighted_stress_score'],
+            mode='lines+markers',
+            name='Stress Score',
+            line=dict(color=self.colors[0], width=2),
+            marker=dict(size=4)
+        ))
+        
+        if len(filtered_df) > 2:
+            z = np.polyfit(range(len(filtered_df)), filtered_df['weighted_stress_score'], 1)
+            p = np.poly1d(z)
+            fig.add_trace(go.Scatter(
+                x=filtered_df['timestamp'],
+                y=p(range(len(filtered_df))),
+                mode='lines',
+                name='Trend',
+                line=dict(color='red', width=2, dash='dash')
+            ))
+        
+        fig.update_layout(
+            title='Stress Score Over Time',
+            height=400,
+            xaxis_title="Date",
+            yaxis_title="Stress Score",
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Current", f"{filtered_df['weighted_stress_score'].iloc[-1]:.2f}")
+        with col2:
+            st.metric("Average", f"{filtered_df['weighted_stress_score'].mean():.2f}")
+        with col3:
+            st.metric("Maximum", f"{filtered_df['weighted_stress_score'].max():.2f}")
+        with col4:
+            st.metric("Minimum", f"{filtered_df['weighted_stress_score'].min():.2f}")
+    
+    def render_risk_regimes(self):
+        """Render risk regime analysis."""
+        st.markdown("## Risk Regime Analysis")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available")
+            return
+        
+        if 'xgboost_risk_regime' in filtered_df.columns:
+            regime_counts = filtered_df['xgboost_risk_regime'].value_counts()
+            
+            fig = go.Figure(data=[go.Pie(
+                labels=regime_counts.index,
+                values=regime_counts.values,
+                marker=dict(colors=['#2ca02c', '#ff7f0e', '#d62728'])
+            )])
+            
+            fig.update_layout(
+                title='Risk Regime Distribution',
+                height=400
+            )
+            
+            st.plotly_chart(fig, width='stretch')
+            
+            fig2 = px.scatter(
+                filtered_df,
+                x='timestamp',
+                y='weighted_stress_score' if 'weighted_stress_score' in filtered_df.columns else 'sentiment_polarity',
+                color='xgboost_risk_regime',
+                color_discrete_map={'low': '#2ca02c', 'medium': '#ff7f0e', 'high': '#d62728'},
+                title='Risk Regimes Over Time'
+            )
+            
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("Risk regime predictions not yet available. Run the pipeline with XGBoost model.")
+    
+    def render_anomaly_detection(self):
+        """Render anomaly detection view."""
+        st.markdown("## Anomaly Detection")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available")
+            return
+        
+        if 'is_anomaly' in filtered_df.columns:
+            fig = go.Figure()
+            
+            normal = filtered_df[filtered_df['is_anomaly'] == 0]
+            anomalies = filtered_df[filtered_df['is_anomaly'] == 1]
+            
+            if 'weighted_stress_score' in filtered_df.columns:
+                fig.add_trace(go.Scatter(
+                    x=normal['timestamp'],
+                    y=normal['weighted_stress_score'],
+                    mode='markers',
+                    name='Normal',
+                    marker=dict(color='lightblue', size=6)
+                ))
+                
+                fig.add_trace(go.Scatter(
+                    x=anomalies['timestamp'],
+                    y=anomalies['weighted_stress_score'],
+                    mode='markers',
+                    name='Anomaly',
+                    marker=dict(color='red', size=10, symbol='diamond')
+                ))
+            
+            fig.update_layout(
+                title='Anomaly Detection Timeline',
+                height=400,
+                xaxis_title="Date",
+                yaxis_title="Stress Score"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Anomalies", int(filtered_df['is_anomaly'].sum()))
+            with col2:
+                st.metric("Anomaly Rate", f"{(filtered_df['is_anomaly'].sum() / len(filtered_df) * 100):.1f}%")
+        else:
+            st.info("Anomaly detection not yet available. Run the pipeline with Isolation Forest model.")
+    
+    def render_historical_similarity(self):
+        """Render historical similarity view."""
+        st.markdown("## Historical Patterns")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty or 'weighted_stress_score' not in filtered_df.columns:
+            st.info("Historical pattern analysis requires stress score data")
+            return
+        
+        fig = px.histogram(
+            filtered_df,
+            x='weighted_stress_score',
+            nbins=30,
+            title='Stress Score Distribution'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        if 'sentiment_polarity' in filtered_df.columns:
+            fig2 = px.scatter(
+                filtered_df,
+                x='sentiment_polarity',
+                y='weighted_stress_score',
+                title='Sentiment vs Stress Score Correlation'
+            )
+            
+            correlation = filtered_df[['sentiment_polarity', 'weighted_stress_score']].corr().iloc[0, 1]
+            
+            fig2.add_annotation(
+                text=f'Correlation: {correlation:.3f}',
+                xref="paper", yref="paper",
+                x=0.05, y=0.95,
+                showarrow=False,
+                font=dict(size=12),
+                bgcolor="white",
+                bordercolor="black",
+                borderwidth=1
+            )
+            
+            st.plotly_chart(fig2, use_container_width=True)
+    
+    def render_model_performance(self):
+        """Render model performance view."""
+        st.markdown("## Model Performance")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available")
+            return
+        
+        pred_cols = [col for col in filtered_df.columns if 'prediction' in col.lower()]
+        
+        if pred_cols and 'weighted_stress_score' in filtered_df.columns:
+            st.markdown("### Model Predictions Comparison")
+            
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=filtered_df['timestamp'],
+                y=filtered_df['weighted_stress_score'],
+                mode='lines',
+                name='Actual',
+                line=dict(color='black', width=2)
+            ))
+            
+            for i, col in enumerate(pred_cols[:4]):
+                fig.add_trace(go.Scatter(
+                    x=filtered_df['timestamp'],
+                    y=filtered_df[col],
+                    mode='lines',
+                    name=col.replace('_prediction', '').replace('_', ' ').title(),
+                    line=dict(width=1.5, dash='dash')
+                ))
+            
+            fig.update_layout(
+                title='Model Predictions vs Actual',
+                height=500,
+                xaxis_title="Date",
+                yaxis_title="Value",
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("### Model Metrics")
+            
+            metrics_data = []
+            for col in pred_cols:
+                try:
+                    actual = filtered_df['weighted_stress_score'].dropna()
+                    predicted = filtered_df[col].dropna()
+                    
+                    if len(actual) == len(predicted) and len(actual) > 0:
+                        mse = np.mean((actual - predicted) ** 2)
+                        mae = np.mean(np.abs(actual - predicted))
+                        
+                        metrics_data.append({
+                            'Model': col.replace('_prediction', '').replace('_', ' ').title(),
+                            'MSE': f'{mse:.4f}',
+                            'MAE': f'{mae:.4f}'
+                        })
+                except:
+                    pass
+            
+            if metrics_data:
+                st.dataframe(pd.DataFrame(metrics_data), width='stretch', hide_index=True)
+        else:
+            st.info("Model predictions not yet available. Run the pipeline to train models.")
+    
+    def render_feature_analysis(self):
+        """Render feature analysis view."""
+        st.markdown("## Feature Analysis")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available")
+            return
+        
+        numeric_cols = filtered_df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = [col for col in numeric_cols if col not in ['is_anomaly']]
+        
+        if len(numeric_cols) > 1:
+            st.markdown("### Feature Correlations")
+            
+            corr_cols = numeric_cols[:15]
+            corr_matrix = filtered_df[corr_cols].corr()
+            
+            fig = px.imshow(
+                corr_matrix,
+                labels=dict(color="Correlation"),
+                color_continuous_scale='RdBu',
+                zmin=-1,
+                zmax=1
+            )
+            
+            fig.update_layout(
+                title='Feature Correlation Matrix',
+                height=600
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("### Feature Statistics")
+            
+            stats_df = filtered_df[numeric_cols].describe().T
+            stats_df = stats_df.round(3)
+            
+            st.dataframe(stats_df, width='stretch')
+        else:
+            st.info("Not enough features for analysis")
+    
+    def render_data_export(self):
+        """Render data export view."""
+        st.markdown("## Data Export")
+        
+        filtered_df = self._apply_filters(self.df)
+        
+        if filtered_df.empty:
+            st.warning("No data available to export")
+            return
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### Export Format")
+            export_format = st.radio(
+                "Select format",
+                ['CSV', 'JSON', 'Excel'],
+                horizontal=True
+            )
+        
+        with col2:
+            st.markdown("### Data Preview")
+            st.dataframe(filtered_df.head(5), width='stretch')
+        
+        st.markdown(f"**Total Records:** {len(filtered_df):,}")
+        
+        if export_format == 'CSV':
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"market_data_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        
+        elif export_format == 'JSON':
+            json_str = filtered_df.to_json(orient='records', indent=2)
+            st.download_button(
+                label="Download JSON",
+                data=json_str,
+                file_name=f"market_data_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
+        
+        elif export_format == 'Excel':
+            import io
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                filtered_df.to_excel(writer, sheet_name='Data', index=False)
+            
+            st.download_button(
+                label="Download Excel",
+                data=buffer.getvalue(),
+                file_name=f"market_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    
+    def render_footer(self):
+        """Render professional footer."""
+        st.markdown("---")
+        st.markdown("""
+        <div style='text-align: center; color: #6c757d; font-size: 0.9em; padding: 20px;'>
+        Market Narrative Risk Intelligence System v1.0.0<br>
+        Real-time market analysis powered by machine learning
+        </div>
+        """, unsafe_allow_html=True)
+    
+    def run(self):
+        """Run the dashboard application."""
+        try:
+            self.render_header()
+            self.render_sidebar()
+            
+            view_handlers = {
+                'overview': self.render_overview,
+                'stress_analysis': self.render_stress_analysis,
+                'risk_regimes': self.render_risk_regimes,
+                'anomaly_detection': self.render_anomaly_detection,
+                'historical_similarity': self.render_historical_similarity,
+                'model_performance': self.render_model_performance,
+                'feature_analysis': self.render_feature_analysis,
+                'data_export': self.render_data_export
+            }
+            
+            current_view = st.session_state.get('current_view', 'overview')
+            handler = view_handlers.get(current_view, self.render_overview)
+            
+            handler()
+            
+            self.render_footer()
+            
+            self.logger.info(f"Dashboard view '{current_view}' rendered successfully")
             
         except Exception as e:
-            logger.error(f"Dashboard error: {e}", exc_info=True)
-            st.error(f"Error: {str(e)}")
+            self.logger.error(f"Dashboard error: {e}", exc_info=True)
+            st.error(f"An error occurred: {str(e)}")
+            with st.expander("Error Details"):
+                st.code(traceback.format_exc())
 
 
 def main():
-    """Main entry point."""
+    """Main entry point for the dashboard."""
     try:
         dashboard = MarketRiskDashboard()
-        dashboard.run_dashboard()
+        dashboard.run()
     except Exception as e:
-        logger.error(f"Initialization error: {e}", exc_info=True)
-        st.error(f"Failed to initialize dashboard: {str(e)}")
+        st.error(f"Failed to initialize dashboard: {e}")
+        st.code(traceback.format_exc())
+        st.stop()
 
 
 if __name__ == "__main__":
