@@ -1,7 +1,8 @@
 """
 Professional Market Narrative Risk Intelligence Dashboard.
-Complete working version with all features, no emojis, proper data handling.
+Complete working version with all features, proper data handling.
 """
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,6 +15,9 @@ import json
 import sys
 import traceback
 from typing import List, Dict, Optional, Tuple
+
+# Global RUN_ID (shared across the whole process)
+from src.pipeline.utils.run_id import RUN_ID
 
 # Page configuration - MUST be first Streamlit command
 st.set_page_config(
@@ -97,6 +101,7 @@ class MarketRiskDashboard:
     def __init__(self):
         """Initialize dashboard with professional settings."""
         self.logger = logger
+        self.run_id = RUN_ID  # Use shared RUN_ID
         
         try:
             if config_loader:
@@ -156,7 +161,19 @@ class MarketRiskDashboard:
             if not gold_dir.exists():
                 gold_dir.mkdir(parents=True, exist_ok=True)
             
-            # First try predictions files
+            # First try the predictions file that matches our run_id
+            current_pred_file = gold_dir / f"predictions_{self.run_id}.parquet"
+            if current_pred_file.exists():
+                file_size = current_pred_file.stat().st_size
+                if file_size < 100:
+                    self.logger.warning(f"Corrupted file detected: {current_pred_file} ({file_size} bytes)")
+                    current_pred_file.unlink()
+                else:
+                    self.df = pd.read_parquet(current_pred_file)
+                    self._finalize_data_load(str(current_pred_file))
+                    return
+            
+            # Fallback: try predictions files
             prediction_files = list(gold_dir.glob("*predictions*.parquet"))
             
             if prediction_files:
@@ -164,23 +181,14 @@ class MarketRiskDashboard:
                 
                 # Check file size before attempting to read
                 file_size = latest_file.stat().st_size
-                if file_size < 100:  # Corrupted file
+                if file_size < 100:
                     self.logger.warning(f"Corrupted file detected: {latest_file} ({file_size} bytes)")
-                    latest_file.unlink()  # Delete it
+                    latest_file.unlink()
                     self._create_sample_data()
                     return
                 
                 self.df = pd.read_parquet(latest_file)
-                
-                if 'timestamp' in self.df.columns:
-                    self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
-                
-                if not self.df.empty and 'timestamp' in self.df.columns:
-                    self.min_date = self.df['timestamp'].min().date()
-                    self.max_date = self.df['timestamp'].max().date()
-                
-                self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
-                st.session_state.data_loaded = True
+                self._finalize_data_load(str(latest_file))
                 return
                 
             # Try feature files
@@ -196,14 +204,7 @@ class MarketRiskDashboard:
                     return
                 
                 self.df = pd.read_parquet(latest_file)
-                
-                if 'timestamp' in self.df.columns:
-                    self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
-                    self.min_date = self.df['timestamp'].min().date()
-                    self.max_date = self.df['timestamp'].max().date()
-                
-                self.logger.info(f"Loaded {len(self.df)} records from {latest_file}")
-                st.session_state.data_loaded = True
+                self._finalize_data_load(str(latest_file))
                 return
             
             # No valid files found
@@ -213,6 +214,18 @@ class MarketRiskDashboard:
         except Exception as e:
             self.logger.error(f"Failed to load data: {e}", exc_info=True)
             self._create_sample_data()
+    
+    def _finalize_data_load(self, source_path):
+        """Finalize data loading after reading parquet file."""
+        if 'timestamp' in self.df.columns:
+            self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+        
+        if not self.df.empty and 'timestamp' in self.df.columns:
+            self.min_date = self.df['timestamp'].min().date()
+            self.max_date = self.df['timestamp'].max().date()
+        
+        self.logger.info(f"Loaded {len(self.df)} records from {source_path}")
+        st.session_state.data_loaded = True
     
     def _create_sample_data(self):
         """Create sample data for demonstration."""
@@ -264,7 +277,6 @@ class MarketRiskDashboard:
         
         progress_bar = st.progress(0)
         status_text = st.empty()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         try:
             # Step 1: Scraping
@@ -347,10 +359,10 @@ class MarketRiskDashboard:
                         predictions_dfs.append(predictions_subset)
                         self.logger.info(f"{model_name} completed successfully")
                     
-                    # Save model
+                    # Save model with shared run_id
                     model_dir = Path("models")
                     model_dir.mkdir(exist_ok=True)
-                    model.save(model_dir / f"{model_name}_{timestamp}.joblib")
+                    model.save(model_dir / f"{model_name}_{self.run_id}.joblib")
                     
                 except Exception as e:
                     self.logger.error(f"{model_name} training failed: {e}")
@@ -378,8 +390,8 @@ class MarketRiskDashboard:
                     how='left'
                 )
                 
-                # Save predictions
-                predictions_path = Path("data/gold") / f"predictions_{timestamp}.parquet"
+                # Save predictions with shared run_id
+                predictions_path = Path("data/gold") / f"predictions_{self.run_id}.parquet"
                 final_predictions.to_parquet(predictions_path, index=False)
                 
                 self.logger.info(f"Predictions saved to: {predictions_path}")
@@ -478,12 +490,11 @@ class MarketRiskDashboard:
             status_text.text("Saving predictions...")
             progress_bar.progress(95)
             
-            # Save to gold directory
+            # Save to gold directory with shared run_id
             gold_dir = Path("data/gold")
             gold_dir.mkdir(parents=True, exist_ok=True)
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = gold_dir / f"predictions_{timestamp}.parquet"
+            output_file = gold_dir / f"predictions_{self.run_id}.parquet"
             
             predictions.to_parquet(output_file, index=False)
             
