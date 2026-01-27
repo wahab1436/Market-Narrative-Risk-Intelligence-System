@@ -274,22 +274,35 @@ class MarketRiskDashboard:
         if not PIPELINE_AVAILABLE:
             st.error("Pipeline components not available. Cannot run full pipeline.")
             return False
-        
+    
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
+    
         try:
             # Step 1: Scraping
             status_text.text("Step 1/4: Scraping news articles...")
             progress_bar.progress(10)
             self.logger.info("Starting scraping phase")
-            
+        
             bronze_path = scrape_and_save()
-            
-            if not bronze_path:
+        
+            # FIX: Handle the return type properly
+            if bronze_path is None:
                 st.error("Scraping failed. No data collected.")
                 return False
-            
+        
+            # If it returns a DataFrame (wrong), save it and create path
+            if hasattr(bronze_path, 'shape'):
+                # Save the DataFrame and create proper path
+                temp_path = Path("data/bronze") / f"yahoo_market_{self.run_id}.parquet"
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                bronze_path.to_parquet(temp_path)
+                bronze_path = temp_path
+        
+            if not Path(bronze_path).exists():
+                st.error(f"Scraping failed. File not found: {bronze_path}")
+                return False
+        
             self.logger.info(f"Scraping completed: {bronze_path}")
             progress_bar.progress(25)
             
