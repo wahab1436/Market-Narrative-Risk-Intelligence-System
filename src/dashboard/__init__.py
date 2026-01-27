@@ -1,14 +1,8 @@
 """
-Dashboard module initialization
+Dashboard package for Market Narrative Risk Intelligence System.
 """
 
-try:
-    from src.dashboard.app import MarketRiskDashboard, main
-except ImportError as e:
-    # Fallback if app.py has issues
-    import logging
-    logging.warning(f"Dashboard import warning: {e}")
-    MarketRiskDashboard = None
-    main = None
+from src.dashboard.app import MarketRiskDashboard, main
 
 __all__ = ['MarketRiskDashboard', 'main']
+__version__ = '1.0.0'
